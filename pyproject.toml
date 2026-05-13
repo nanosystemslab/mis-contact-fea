@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mis-contact-fea"
+version = "0.1.0"
+description = "2D plane-strain contact-FEA pipeline for mechanical interlocking nanostructures"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Nanosystems Lab", email = "fnslab@hawaii.edu" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
+]
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "h5py>=3.8",
+    "gmsh>=4.11",
+    "meshio>=5.3",
+    "pyvista>=0.42",
+    "imageio>=2.31",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+gui = ["streamlit>=1.30"]
+dev = ["pytest>=7.0", "pre-commit>=3.0", "black>=24.0", "isort>=5.12"]
+
+[project.urls]
+Homepage = "https://github.com/nanosystemslab/mis-contact-fea"
+Repository = "https://github.com/nanosystemslab/mis-contact-fea"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mis_contact_fea*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    archive
+  | notebooks
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+force_single_line = false
+lines_after_imports = 2
+skip_glob = ["archive/*", "notebooks/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,19 @@
+Sweep started: Wed May 13 08:39:42 HST 2026
+Settings: PITCH=198 STEPS=50
+          HP=220 PLATE=30 MESH_SIZE=4
+          FRIC=0 GAMMA_SCALE=0.2
+Per-shape DISP / INITIAL_GAP:
+  oblate: DISP=2  INITIAL_GAP=-30
+
+
+Sweep finished: Wed May 13 08:39:51 HST 2026
+Succeeded (1): oblate
+Failed    (0): none
+
+Per-shape artifacts in runs_smoke_test/<shape>/:
+  runs_smoke_test/oblate/
+    mesh_preview.png       (mesh BCs + tags)
+    contact_animation_pv.gif
+    contact_animation_pv_frames/
+    force_displacement.csv
+    run.log

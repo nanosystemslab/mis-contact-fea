@@ -1,0 +1,29 @@
+Bootstrap: localimage
+From: /home/mtdsn/Optimization_Framework/containers/dolfinx_v0.9.0.sif
+
+%files
+    ../module/asimov-contact /opt/asimov-contact
+
+%post
+    python3 -m pip install --upgrade pip
+    python3 -m pip install scipy matplotlib meshio h5py ninja
+
+    export VERBOSE=1
+    cmake -G Ninja -DCMAKE_BUILD_TYPE=Developer -B /opt/asimov-contact/build-contact -S /opt/asimov-contact/cpp
+    ninja -C /opt/asimov-contact/build-contact install
+
+    python3 -m pip install -r /opt/asimov-contact/python/build-requirements.txt
+    python3 -m pip install --no-build-isolation /opt/asimov-contact/python
+
+    python3 -c "import dolfinx_contact; print('dolfinx_contact installed')"
+
+%labels
+    Author mnakamura
+    Version 0.9.0-contact
+    Description "DOLFINx 0.9.0 container with dolfinx_contact + meshio tooling"
+
+%help
+    DOLFINx 0.9.0 container extended with dolfinx_contact, meshio, and runtime deps.
+
+    Usage:
+        singularity exec dolfinx_v0.9.0_contact.sif python3 your_script.py

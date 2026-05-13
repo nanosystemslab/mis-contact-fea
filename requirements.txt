@@ -1,0 +1,10 @@
+# Host-side dependencies for mesh building, previewing, animation, and analysis.
+# (The simulation itself runs inside the dolfinx-contact:local Docker image —
+#  dolfinx + petsc4py + mpi4py + dolfinx_contact live there, not here.)
+numpy>=1.24
+matplotlib>=3.7
+h5py>=3.8
+gmsh>=4.11
+meshio>=5.3
+pyvista>=0.42
+imageio>=2.31

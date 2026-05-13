@@ -1,0 +1,59 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Simulation outputs (regenerate via the sweep scripts)
+runs_all_shapes/
+runs_retention/
+results_2d_test/
+results_bundle/
+results_bundle.zip
+
+# Mesh outputs (regenerate via build_2d_slice_mesh.py)
+mesh_out/
+mesh_out_2d/
+mesh_out_2d_*/
+
+# Animations & frames
+contact_animation*.gif
+contact_animation_frames/
+contact_animation_pv_frames/
+gif_frames_check/
+
+# Top-level analysis plots (regenerate via analyze_forces.py)
+force_*.png
+force_peaks.csv
+comparison_grid*.png
+force_comparison_*.png
+preview_positions.png
+preview_*.png
+mesh_preview.png
+interlock_2d_*.png
+
+# SLURM / HPC run output
+logs/
+*.log
+*.err
+*.out
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Python build / packaging / test caches
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+.nox/
+.tox/
+dist/
+build/
+*.egg-info/

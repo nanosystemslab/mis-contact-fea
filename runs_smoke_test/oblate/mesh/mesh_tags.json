@@ -1,0 +1,20 @@
+{
+  "tags": {
+    "bottom_volume": 1,
+    "top_volume": 2,
+    "bottom_fixed": 11,
+    "top_disp": 12,
+    "bottom_contact": 13,
+    "top_contact": 14,
+    "sym_left": 15,
+    "sym_right": 16
+  },
+  "units": "um",
+  "shape": "oblate",
+  "pitch_um": 198.0,
+  "Hp_um": 220.0,
+  "plate_um": 30.0,
+  "initial_gap_um": -30.0,
+  "Rxy_p_um": 25.0,
+  "z_apex_um": 25.0
+}

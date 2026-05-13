@@ -1,0 +1,19 @@
+# Auto-detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Force LF on shell scripts and Python regardless of platform
+*.sh text eol=lf
+*.py text eol=lf
+
+# Treat binaries as-is
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.h5  binary
+*.xdmf binary
+*.msh binary
+*.STEP binary
+*.step binary
+*.ipynb binary

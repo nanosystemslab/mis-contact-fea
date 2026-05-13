@@ -1,0 +1,158 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="3.0" xmlns:xi="https://www.w3.org/2001/XInclude">
+  <Domain>
+    <Grid Name="mesh" GridType="Uniform">
+      <Topology TopologyType="Triangle" NumberOfElements="11879" NodesPerElement="3">
+        <DataItem Dimensions="11879 3" NumberType="Int" Format="HDF">contact_results.h5:/Mesh/mesh/topology</DataItem>
+      </Topology>
+      <Geometry GeometryType="XY">
+        <DataItem Dimensions="6365 2" Format="HDF">contact_results.h5:/Mesh/mesh/geometry</DataItem>
+      </Geometry>
+    </Grid>
+    <Grid Name="u" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="1" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/1</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="2" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/2</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="3" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/3</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="4" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/4</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="5" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="6" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/6</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="7" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/7</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="8" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/8</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="9" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/9</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="10" />
+        <Attribute Name="u" AttributeType="Vector" Center="Node">
+          <DataItem Dimensions="6365 3" Format="HDF">contact_results.h5:/Function/u/10</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="von_mises" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="1" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/1</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="2" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/2</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="3" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/3</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="4" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/4</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="5" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/5</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="6" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/6</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="7" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/7</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="8" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/8</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="9" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/9</DataItem>
+        </Attribute>
+      </Grid>
+      <Grid Name="von_mises" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="10" />
+        <Attribute Name="von_mises" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="11879 1" Format="HDF">contact_results.h5:/Function/von_mises/10</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>
