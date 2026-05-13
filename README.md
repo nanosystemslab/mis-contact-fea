@@ -9,7 +9,6 @@
 [![Physics](https://img.shields.io/badge/physics-plane--strain%20FEA%20%2B%20contact-blueviolet)](#how-it-works)
 [![Shapes](https://img.shields.io/badge/lobe%20shapes-7-green)](#geometry)
 [![Mesh](https://img.shields.io/badge/mesh-Gmsh%20parametric-yellow)](src/build_2d_slice_mesh.py)
-[![HPC](https://img.shields.io/badge/HPC-SLURM%20%2B%20Singularity-lightgrey)](hpc/)
 [![Container](https://img.shields.io/badge/docker-mattnakamura%2Fdolfinx--contact-2496ED?logo=docker)](https://hub.docker.com/r/mattnakamura/dolfinx-contact)
 
 **Mechanical Interlocking Structure — Contact FEA.** A 2D plane-strain
