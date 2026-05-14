@@ -63,16 +63,30 @@ def bottom_body_vertices(half_x, half_z, P, plate_thickness):
     return np.array(vx), np.array(vz), tags
 
 
-def top_body_vertices(half_x, half_z, P, plate_thickness, initial_gap):
-    """CCW vertices of the top body's outline + edge tags."""
+def top_body_vertices(half_x, half_z, P, plate_thickness, initial_gap,
+                      bottom_z_apex=None):
+    """CCW vertices of the top body's outline + edge tags.
+
+    `half_x`, `half_z` describe the *top* body's right-half profile. For
+    asymmetric pairs (different shapes on top vs bottom), pass the
+    bottom body's apex z via `bottom_z_apex`; the top body is then
+    positioned so its apex sits `initial_gap` above the bottom apex.
+    With `bottom_z_apex=None`, the top profile is assumed identical to
+    the bottom (symmetric pair) and the legacy single-profile geometry
+    is reproduced exactly.
+    """
     Hp = -float(half_z[0])
-    z_apex = float(np.asarray(half_z).max())
-    inner = Hp + 2.0 * z_apex + initial_gap  # plate-bottom z (plate sits above)
+    z_apex_top = float(np.asarray(half_z).max())
+    if bottom_z_apex is None:
+        bottom_z_apex = z_apex_top
+    # Mirror axis is chosen so the top apex lands at bottom_z_apex + initial_gap.
+    mirror_offset = float(bottom_z_apex) + z_apex_top
+    inner = Hp + mirror_offset + initial_gap  # plate-bottom z (plate sits above)
     outer = inner + plate_thickness
 
     # Mirrored-in-z polyline of top pillar (in cell coords, centered at x=P/2)
     top_x_right = P / 2.0 + np.asarray(half_x)  # right side of top pillar
-    top_z = 2.0 * z_apex + initial_gap - np.asarray(half_z)
+    top_z = mirror_offset + initial_gap - np.asarray(half_z)
     n_poly = len(half_x)
 
     vx, vz, tags = [], [], []

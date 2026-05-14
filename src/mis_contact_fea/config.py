@@ -109,15 +109,28 @@ class OutputConfig(BaseModel):
 
 
 class SimulationConfig(BaseModel):
-    """Top-level config — one of these fully specifies a single sim run."""
+    """Top-level config — one of these fully specifies a single sim run.
+
+    The `profile` field is the *bottom* body's lobe (and the top body's
+    by default, for a symmetric pair). Set `top_profile` to use a
+    different shape on the top body — asymmetric pair, e.g. sphere
+    bottom vs. cap top. When `top_profile` is omitted (the common case)
+    behavior is unchanged from earlier versions.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     geometry: GeometryConfig
     profile: ProfileConfig
+    top_profile: Optional[ProfileConfig] = None
     mesh: MeshConfig = MeshConfig()
     solver: SolverConfig
     output: OutputConfig
+
+    @property
+    def effective_top_profile(self) -> ProfileConfig:
+        """Profile used for the top body (falls back to `profile`)."""
+        return self.top_profile if self.top_profile is not None else self.profile
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "SimulationConfig":

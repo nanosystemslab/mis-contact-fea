@@ -89,16 +89,28 @@ def build_mesh(args) -> dict:
     # If main() prepared a profile spec, use the dispatch loader;
     # otherwise fall back to the legacy "look up SHAPES[args.shape]" path.
     profile = getattr(args, "_profile", None)
+    top_profile = getattr(args, "_top_profile", None)
     if profile is None:
         half_x, half_z = SHAPES[args.shape](Hp=args.Hp_um)
+        top_half_x, top_half_z = half_x, half_z
     else:
         from mis_contact_fea.profiles import load_profile
         half_x, half_z = load_profile(profile, Hp=args.Hp_um)
+        if top_profile is None:
+            top_half_x, top_half_z = half_x, half_z
+        else:
+            top_half_x, top_half_z = load_profile(top_profile, Hp=args.Hp_um)
 
     Rxy_p = float(half_x[1])  # second polyline point is always (Rxy_p, -Hp)
+    z_apex_bot = float(np.asarray(half_z).max())
+    z_apex_top = float(np.asarray(top_half_z).max())
+    asymmetric = top_profile is not None
 
     bvx, bvz, btags = bottom_body_vertices(half_x, half_z, args.pitch_um, args.plate_um)
-    tvx, tvz, ttags = top_body_vertices(half_x, half_z, args.pitch_um, args.plate_um, args.initial_gap_um)
+    tvx, tvz, ttags = top_body_vertices(
+        top_half_x, top_half_z, args.pitch_um, args.plate_um, args.initial_gap_um,
+        bottom_z_apex=z_apex_bot if asymmetric else None,
+    )
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", args.gmsh_terminal)
@@ -175,12 +187,18 @@ def build_mesh(args) -> dict:
         "tags": tags,
         "units": "um",
         "shape": args.shape,
+        "top_shape": getattr(args, "top_shape", None) or args.shape,
+        "asymmetric": bool(asymmetric),
         "pitch_um": float(args.pitch_um),
         "Hp_um": float(args.Hp_um),
         "plate_um": float(args.plate_um),
         "initial_gap_um": float(args.initial_gap_um),
         "Rxy_p_um": Rxy_p,
-        "z_apex_um": float(np.asarray(half_z).max()),
+        # Back-compat: keep z_apex_um set to the *larger* apex so existing
+        # solver auto-displacement heuristics still produce a safe value.
+        "z_apex_um": max(z_apex_bot, z_apex_top),
+        "z_apex_bot_um": z_apex_bot,
+        "z_apex_top_um": z_apex_top,
     }
     with (out_dir / "mesh_tags.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -210,6 +228,18 @@ def main() -> None:
     parser.add_argument("--profile-prepend-pillar", action="store_true",
                         help="Stitch the standard pillar to a loaded CSV/SVG profile "
                              "that contains only the lobe outline.")
+    parser.add_argument("--top-profile-kind",
+                        choices=["builtin", "csv", "svg", "step"], default=None,
+                        help="Override the top body's profile kind (asymmetric pair).")
+    parser.add_argument("--top-profile-name", default=None,
+                        help="Name of builtin profile for the top body.")
+    parser.add_argument("--top-profile-path", type=Path, default=None,
+                        help="Path to CSV/SVG/STEP file for the top body's profile.")
+    parser.add_argument("--top-profile-units",
+                        choices=["um", "mm", "cm", "m"], default=None,
+                        help="Length unit of values in --top-profile-path.")
+    parser.add_argument("--top-profile-prepend-pillar", action="store_true",
+                        help="Stitch the standard pillar to a loaded top-body CSV/SVG.")
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--pitch-um", type=float, default=None)
     parser.add_argument("--Hp-um", type=float, default=None,
@@ -240,6 +270,18 @@ def main() -> None:
             args.profile_units = cfg.profile.units
         if not args.profile_prepend_pillar:
             args.profile_prepend_pillar = cfg.profile.prepend_pillar
+        # Top-profile fields (None if config doesn't set top_profile)
+        if cfg.top_profile is not None:
+            if args.top_profile_kind is None:
+                args.top_profile_kind = cfg.top_profile.kind
+            if args.top_profile_name is None:
+                args.top_profile_name = cfg.top_profile.name
+            if args.top_profile_path is None:
+                args.top_profile_path = cfg.top_profile.path
+            if args.top_profile_units is None:
+                args.top_profile_units = cfg.top_profile.units
+            if not args.top_profile_prepend_pillar:
+                args.top_profile_prepend_pillar = cfg.top_profile.prepend_pillar
         # Geometry / mesh fields
         if args.shape is None and cfg.profile.kind == "builtin":
             args.shape = cfg.profile.name
@@ -288,6 +330,21 @@ def main() -> None:
         units=args.profile_units,
         prepend_pillar=args.profile_prepend_pillar,
     )
+    # Asymmetric top body: any --top-profile-* flag triggers it.
+    if (args.top_profile_kind is not None
+            or args.top_profile_name is not None
+            or args.top_profile_path is not None):
+        args._top_profile = ProfileConfig(
+            kind=args.top_profile_kind or "builtin",
+            name=args.top_profile_name,
+            path=args.top_profile_path,
+            units=args.top_profile_units or "um",
+            prepend_pillar=args.top_profile_prepend_pillar,
+        )
+        args.top_shape = args.top_profile_name or "custom"
+    else:
+        args._top_profile = None
+        args.top_shape = None
     # For shape-name-derived things (output paths, gmsh group names),
     # use either the builtin name or a generic 'custom' label.
     if args.shape is None:
