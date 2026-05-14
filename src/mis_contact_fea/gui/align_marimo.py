@@ -336,13 +336,17 @@ def _(np):
         add(0.0, plate_top, "sym_left")
         return np.array(vx), np.array(vz), tags
 
-    def top_body_vertices(half_x, half_z, P, plate_thickness, initial_gap):
+    def top_body_vertices(half_x, half_z, P, plate_thickness, initial_gap,
+                          bottom_z_apex=None):
         Hp = -float(half_z[0])
-        z_apex = float(np.asarray(half_z).max())
-        inner = Hp + 2.0 * z_apex + initial_gap
+        z_apex_top = float(np.asarray(half_z).max())
+        if bottom_z_apex is None:
+            bottom_z_apex = z_apex_top
+        mirror_offset = float(bottom_z_apex) + z_apex_top
+        inner = Hp + mirror_offset + initial_gap
         outer = inner + plate_thickness
         top_x_right = P / 2.0 + np.asarray(half_x)
-        top_z = 2.0 * z_apex + initial_gap - np.asarray(half_z)
+        top_z = mirror_offset + initial_gap - np.asarray(half_z)
         n_poly = len(half_x)
         vx, vz, tags = [], [], []
         def add(x, z, edge_tag):
@@ -380,13 +384,15 @@ def _():
 
 @app.cell
 def _(SHAPES, mo):
-    shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="sphere", label="Shape")
+    shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="sphere", label="Bottom shape")
+    asymmetric = mo.ui.checkbox(value=False, label="Asymmetric pair (different top shape)")
+    top_shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="cap", label="Top shape")
     direction = mo.ui.radio(
         options=["down (push-in)", "up (retention)"],
         value="down (push-in)",
         label="Direction",
     )
-    return direction, shape
+    return asymmetric, direction, shape, top_shape
 
 
 @app.cell
@@ -408,9 +414,14 @@ def _(RECOMMENDED, mo, shape):
 
 
 @app.cell
-def _(direction, disp, initial_gap, mo, shape, steps):
+def _(asymmetric, direction, disp, initial_gap, mo, shape, steps, top_shape):
+    # Show the top-shape picker only when the asymmetric toggle is on,
+    # otherwise it's hidden and the top body uses the same shape as the
+    # bottom (legacy symmetric pair).
+    top_row = mo.hstack([asymmetric, top_shape]) if asymmetric.value else asymmetric
     mo.vstack([
         mo.hstack([shape, direction]),
+        top_row,
         initial_gap,
         disp,
         steps,
@@ -477,6 +488,7 @@ def _(out_dir):
 def _(
     Hp,
     SHAPES,
+    asymmetric,
     bottom_body_vertices,
     dir_value,
     disp,
@@ -487,11 +499,22 @@ def _(
     plt,
     shape,
     top_body_vertices,
+    top_shape,
 ):
-    """Two-panel matplotlib preview."""
+    """Two-panel matplotlib preview, with optional asymmetric top body."""
     half_x, half_z = SHAPES[shape.value](Hp=Hp.value)
+    if asymmetric.value:
+        top_half_x, top_half_z = SHAPES[top_shape.value](Hp=Hp.value)
+        bottom_z_apex_arg = float(np.asarray(half_z).max())
+    else:
+        top_half_x, top_half_z = half_x, half_z
+        bottom_z_apex_arg = None
+
     bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch.value, plate.value)
-    tvx, tvz_init, _ = top_body_vertices(half_x, half_z, pitch.value, plate.value, initial_gap.value)
+    tvx, tvz_init, _ = top_body_vertices(
+        top_half_x, top_half_z, pitch.value, plate.value, initial_gap.value,
+        bottom_z_apex=bottom_z_apex_arg,
+    )
     bvx, bvz = np.asarray(bvx), np.asarray(bvz)
     tvx, tvz_init = np.asarray(tvx), np.asarray(tvz_init)
 
@@ -517,8 +540,11 @@ def _(
         ax.set_xlabel("x (µm)")
         ax.set_ylabel("z (µm)")
         ax.set_title(title, fontsize=10)
+    pair_label = (
+        f"{shape.value} ↔ {top_shape.value}" if asymmetric.value else shape.value
+    )
     fig.suptitle(
-        f"{shape.value} — IG = {initial_gap.value:+g} µm, DISP = {disp.value:g} µm, pitch = {pitch.value:g} µm",
+        f"{pair_label} — IG = {initial_gap.value:+g} µm, DISP = {disp.value:g} µm, pitch = {pitch.value:g} µm",
         fontsize=10,
     )
     fig.tight_layout()
@@ -529,6 +555,7 @@ def _(
 @app.cell
 def _(
     Hp,
+    asymmetric,
     contact_mode,
     dir_value,
     disp,
@@ -544,6 +571,7 @@ def _(
     plate,
     shape,
     steps,
+    top_shape,
     yaml,
 ):
     """Build the YAML config from current UI state (plain dict — no pydantic
@@ -556,6 +584,12 @@ def _(
             "initial_gap_um": float(initial_gap.value),
         },
         "profile": {"kind": "builtin", "name": shape.value, "units": "um"},
+    }
+    if asymmetric.value:
+        cfg_dict["top_profile"] = {
+            "kind": "builtin", "name": top_shape.value, "units": "um",
+        }
+    cfg_dict.update({
         "mesh": {"characteristic_size_um": float(mesh_h.value)},
         "solver": {
             "steps": int(steps.value),
@@ -570,7 +604,7 @@ def _(
             "pc_type": "lu",
         },
         "output": {"out_dir": out_dir.value},
-    }
+    })
     buf = io.StringIO()
     yaml.safe_dump(cfg_dict, buf, sort_keys=False, default_flow_style=False)
     yaml_text = buf.getvalue()
@@ -584,8 +618,9 @@ def _(mo, yaml_text):
 
 
 @app.cell
-def _(dir_value, mo, shape, yaml_text):
-    fname = f"{shape.value}_{dir_value}.yaml"
+def _(asymmetric, dir_value, mo, shape, top_shape, yaml_text):
+    pair = f"{shape.value}_vs_{top_shape.value}" if asymmetric.value else shape.value
+    fname = f"{pair}_{dir_value}.yaml"
     download = mo.download(
         data=yaml_text.encode("utf-8"),
         filename=fname,
