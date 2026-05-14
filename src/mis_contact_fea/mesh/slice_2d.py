@@ -34,136 +34,21 @@ import gmsh
 import meshio
 import numpy as np
 
+from mis_contact_fea.mesh.layout import (
+    bottom_body_vertices,
+    dedup_consecutive as _dedup_consecutive,
+    signed_area as _signed_area,
+    top_body_vertices,
+)
 from mis_contact_fea.profiles import SHAPES
 
 
-# ---------------- outline construction ------------------------------------
-
-def bottom_body_vertices(half_x, half_z, P, plate_thickness):
-    """CCW vertices of the bottom body's outline as parallel arrays.
-
-    Also returns a list `edge_tags` of length len(verts), where
-    edge_tags[i] is the physical-group name for the edge from vert i
-    to vert (i+1) % len(verts).
-    """
-    Hp = -float(half_z[0])
-    plate_bot = -Hp - plate_thickness
-    plate_top = -Hp
-
-    # half_x has N+1 entries (indices 0..N). Original polyline starts at
-    # (0, plate_top), ends at (0, z_apex).
-    # Mirrored polyline = (P - half_x, half_z), same N+1 entries.
-    n_poly = len(half_x)  # = N + 1
-
-    vx, vz, tags = [], [], []
-
-    def add(x, z, edge_tag):
-        vx.append(float(x))
-        vz.append(float(z))
-        tags.append(edge_tag)
-
-    # Plate corners + cell-right-edge cut
-    add(0.0,        plate_bot, "bottom_fixed")  # V0
-    add(P,          plate_bot, "sym_right")     # V1
-    add(P,          plate_top, "sym_right")     # V2
-    add(P,          float(half_z[-1]), "bottom_contact")  # V3 = (P, z_apex)
-
-    # Mirrored polyline (curve of pillar half-B's left side, traversed
-    # top->bottom). Reversed-then-skip-endpoints: indices N-1 .. 1.
-    # This produces vertices V4..V_{N+2}, ending at (P-Rxy_p, plate_top).
-    mir_x = (P - np.asarray(half_x))[::-1]
-    mir_z = np.asarray(half_z)[::-1]
-    for i in range(1, n_poly - 1):
-        add(mir_x[i], mir_z[i], "bottom_contact")
-
-    # Implicit edge from V_{N+2}=(P-Rxy_p, plate_top) to next vertex
-    # (Rxy_p, plate_top) crosses the exposed plate top; tagged
-    # "bottom_contact" by V_{N+2}'s outgoing tag (set in the for-loop above).
-    # Now traverse the original polyline indices 1..N-1 (pillar half-A
-    # right side, bottom->top, excluding the axis-base at idx 0 and the
-    # apex at idx N which we add separately as "sym_left").
-    for i in range(1, n_poly - 1):
-        add(float(half_x[i]), float(half_z[i]), "bottom_contact")
-    # Last polyline point = apex on axis, also where sym_left starts.
-    add(float(half_x[-1]), float(half_z[-1]), "sym_left")  # V_{2N+2} = (0, z_apex)
-
-    # Intermediate vertex at (0, plate_top) to break the long sym_left
-    # edge into two segments (matches the right side which has (P, plate_top)).
-    add(0.0, plate_top, "sym_left")  # V_{2N+3}
-
-    # Closing edge V_{2N+3} -> V0 along x=0 from plate_top to plate_bot
-    # is implicit; that edge is tagged "sym_left" by V_{2N+3}'s tag.
-    return np.array(vx), np.array(vz), tags
-
-
-def top_body_vertices(half_x, half_z, P, plate_thickness, initial_gap):
-    """CCW vertices of the top body's outline + edge tags."""
-    Hp = -float(half_z[0])
-    z_apex = float(np.asarray(half_z).max())
-    inner = Hp + 2.0 * z_apex + initial_gap  # plate-bottom z (plate sits above)
-    outer = inner + plate_thickness
-
-    # Mirrored-in-z polyline of top pillar (in cell coords, centered at x=P/2)
-    top_x_right = P / 2.0 + np.asarray(half_x)  # right side of top pillar
-    top_z = 2.0 * z_apex + initial_gap - np.asarray(half_z)
-    n_poly = len(half_x)
-
-    vx, vz, tags = [], [], []
-
-    def add(x, z, edge_tag):
-        vx.append(float(x))
-        vz.append(float(z))
-        tags.append(edge_tag)
-
-    add(0.0, outer, "top_disp")    # V0
-    add(P,   outer, "sym_right")   # V1
-    add(P,   inner, "top_contact") # V2 -> (P/2+Rxy_p, inner) below: plate-bottom exposed
-    # Right side of top pillar: polyline indices 1..N
-    for i in range(1, n_poly):
-        add(float(top_x_right[i]), float(top_z[i]), "top_contact")  # V3..V_{N+2}
-    # Last point of right side = (P/2, struct_tip).
-    # Left side mirrored across x=P/2, reversed, [1:-1]: indices N-1..1
-    top_x_left = P / 2.0 - np.asarray(half_x)
-    for i in range(n_poly - 2, 0, -1):
-        add(float(top_x_left[i]), float(top_z[i]), "top_contact")
-    # End of left side at (P/2 - Rxy_p, inner) is the last appended; next
-    # we need (0, inner) to traverse the plate-bottom exposed segment.
-    add(0.0, inner, "sym_left")
-    # Closing edge along x=0 from inner up to outer is sym_left (tagged
-    # by the just-appended vertex's outgoing edge).
-    return np.array(vx), np.array(vz), tags
+# Re-export for backward compatibility — external callers used to do
+# `from mis_contact_fea.mesh.slice_2d import bottom_body_vertices`.
+__all__ = ["bottom_body_vertices", "top_body_vertices", "build_mesh", "main"]
 
 
 # ---------------- gmsh assembly -------------------------------------------
-
-def _signed_area(vx, vz):
-    n = len(vx)
-    s = 0.0
-    for i in range(n):
-        j = (i + 1) % n
-        s += vx[i] * vz[j] - vx[j] * vz[i]
-    return 0.5 * s
-
-
-def _dedup_consecutive(vx, vz, edge_tags, tol=1e-9):
-    """Drop any vertex coincident with its successor (within tol).
-
-    A duplicate creates a zero-length edge in the Gmsh geometry, which
-    causes the 2D mesher to hang. The pillar/arc-transition in some of
-    the notebook's right-half generators introduces such duplicates.
-    """
-    n = len(vx)
-    keep = []
-    for i in range(n):
-        j = (i + 1) % n
-        if abs(vx[i] - vx[j]) < tol and abs(vz[i] - vz[j]) < tol:
-            continue  # drop vertex i; its outgoing edge is zero-length
-        keep.append(i)
-    return (
-        [vx[i] for i in keep],
-        [vz[i] for i in keep],
-        [edge_tags[i] for i in keep],
-    )
 
 
 def _add_polygon_surface(gmsh, vx, vz, edge_tags, mesh_size):
@@ -201,8 +86,14 @@ def _add_polygon_surface(gmsh, vx, vz, edge_tags, mesh_size):
 
 
 def build_mesh(args) -> dict:
-    shape_fn = SHAPES[args.shape]
-    half_x, half_z = shape_fn(Hp=args.Hp_um)
+    # If main() prepared a profile spec, use the dispatch loader;
+    # otherwise fall back to the legacy "look up SHAPES[args.shape]" path.
+    profile = getattr(args, "_profile", None)
+    if profile is None:
+        half_x, half_z = SHAPES[args.shape](Hp=args.Hp_um)
+    else:
+        from mis_contact_fea.profiles import load_profile
+        half_x, half_z = load_profile(profile, Hp=args.Hp_um)
 
     Rxy_p = float(half_x[1])  # second polyline point is always (Rxy_p, -Hp)
 
@@ -304,18 +195,103 @@ def main() -> None:
         description="Build the 2D plane-strain unit-cell mesh for the interlock sim.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--shape", choices=sorted(SHAPES.keys()), default="sphere")
-    parser.add_argument("--out-dir", type=Path, default=Path("mesh_out_2d"))
-    parser.add_argument("--pitch-um", type=float, default=170.0)
-    parser.add_argument("--Hp-um", type=float, default=220.0,
+    parser.add_argument("--config", type=Path, default=None,
+                        help="YAML simulation config (provides defaults for the flags below).")
+    parser.add_argument("--shape", choices=sorted(SHAPES.keys()), default=None,
+                        help="Shortcut for --profile-kind builtin --profile-name X.")
+    parser.add_argument("--profile-kind", choices=["builtin", "csv", "svg", "step"],
+                        default=None, help="Where the polyline comes from.")
+    parser.add_argument("--profile-name", default=None,
+                        help="Name of builtin profile (sphere, cone, …).")
+    parser.add_argument("--profile-path", type=Path, default=None,
+                        help="Path to CSV / SVG / STEP file for non-builtin profiles.")
+    parser.add_argument("--profile-units", choices=["um", "mm", "cm", "m"], default=None,
+                        help="Length unit of values in profile-path (default: um).")
+    parser.add_argument("--profile-prepend-pillar", action="store_true",
+                        help="Stitch the standard pillar to a loaded CSV/SVG profile "
+                             "that contains only the lobe outline.")
+    parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument("--pitch-um", type=float, default=None)
+    parser.add_argument("--Hp-um", type=float, default=None,
                         help="Pillar height in micrometres.")
-    parser.add_argument("--plate-um", type=float, default=30.0,
+    parser.add_argument("--plate-um", type=float, default=None,
                         help="Plate thickness.")
-    parser.add_argument("--initial-gap-um", type=float, default=10.0,
+    parser.add_argument("--initial-gap-um", type=float, default=None,
                         help="Initial z gap between top and bottom structure tips.")
-    parser.add_argument("--mesh-size-um", type=float, default=4.0)
+    parser.add_argument("--mesh-size-um", type=float, default=None)
     parser.add_argument("--gmsh-terminal", type=int, default=1)
     args = parser.parse_args()
+
+    # If --config is given, fill any flag the user didn't pass from the
+    # config; explicit flags always win over config values. If no config,
+    # apply the legacy defaults to maintain backward-compatible CLI.
+    if args.config is not None:
+        from mis_contact_fea.config import SimulationConfig
+
+        cfg = SimulationConfig.from_yaml(args.config)
+        # Profile fields
+        if args.profile_kind is None:
+            args.profile_kind = cfg.profile.kind
+        if args.profile_name is None:
+            args.profile_name = cfg.profile.name
+        if args.profile_path is None:
+            args.profile_path = cfg.profile.path
+        if args.profile_units is None:
+            args.profile_units = cfg.profile.units
+        if not args.profile_prepend_pillar:
+            args.profile_prepend_pillar = cfg.profile.prepend_pillar
+        # Geometry / mesh fields
+        if args.shape is None and cfg.profile.kind == "builtin":
+            args.shape = cfg.profile.name
+        if args.out_dir is None:
+            args.out_dir = cfg.mesh_dir
+        if args.pitch_um is None:
+            args.pitch_um = cfg.geometry.pitch_um
+        if args.Hp_um is None:
+            args.Hp_um = cfg.geometry.Hp_um
+        if args.plate_um is None:
+            args.plate_um = cfg.geometry.plate_um
+        if args.initial_gap_um is None:
+            args.initial_gap_um = cfg.geometry.initial_gap_um
+        if args.mesh_size_um is None:
+            args.mesh_size_um = cfg.mesh.characteristic_size_um
+
+    # Legacy defaults for the no-config path.
+    if args.profile_kind is None:
+        # --shape on its own implies kind=builtin
+        args.profile_kind = "builtin"
+    if args.profile_units is None:
+        args.profile_units = "um"
+    if args.shape is None and args.profile_kind == "builtin" and args.profile_name is None:
+        args.shape = "sphere"
+    if args.profile_kind == "builtin" and args.profile_name is None:
+        args.profile_name = args.shape
+    if args.out_dir is None:
+        args.out_dir = Path("mesh_out_2d")
+    if args.pitch_um is None:
+        args.pitch_um = 170.0
+    if args.Hp_um is None:
+        args.Hp_um = 220.0
+    if args.plate_um is None:
+        args.plate_um = 30.0
+    if args.initial_gap_um is None:
+        args.initial_gap_um = 10.0
+    if args.mesh_size_um is None:
+        args.mesh_size_um = 4.0
+
+    # Build a ProfileConfig and stash on args for build_mesh().
+    from mis_contact_fea.config import ProfileConfig
+    args._profile = ProfileConfig(
+        kind=args.profile_kind,
+        name=args.profile_name,
+        path=args.profile_path,
+        units=args.profile_units,
+        prepend_pillar=args.profile_prepend_pillar,
+    )
+    # For shape-name-derived things (output paths, gmsh group names),
+    # use either the builtin name or a generic 'custom' label.
+    if args.shape is None:
+        args.shape = args.profile_name or "custom"
 
     build_mesh(args)
 

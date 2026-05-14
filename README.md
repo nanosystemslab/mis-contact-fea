@@ -10,6 +10,7 @@
 [![Shapes](https://img.shields.io/badge/lobe%20shapes-7-green)](#geometry)
 [![Mesh](https://img.shields.io/badge/mesh-Gmsh%20parametric-yellow)](src/build_2d_slice_mesh.py)
 [![Container](https://img.shields.io/badge/docker-mattnakamura%2Fdolfinx--contact-2496ED?logo=docker)](https://hub.docker.com/r/mattnakamura/dolfinx-contact)
+[![Hosted GUI](https://img.shields.io/badge/GUI-marimo%20%2B%20WASM%20on%20GH%20Pages-FF4B4B?logo=marimo)](https://nanosystemslab.github.io/mis-contact-fea/)
 
 **Mechanical Interlocking Structure — Contact FEA.** A 2D plane-strain
 finite-element pipeline for characterizing the **insertion** vs
@@ -35,46 +36,63 @@ remaining quantitatively predictive for periodic patches.
 
 ```
 mis-contact-fea/
-├── README.md
-├── .gitignore
-├── .python-version
-├── requirements.txt          host-side Python deps (matplotlib, gmsh, pyvista, …)
-├── src/                      mesh / solver / analysis Python
-│   ├── profiles.py                shape generators (right-half polylines)
-│   ├── build_2d_slice_mesh.py     Gmsh → dolfinx mesh
-│   ├── run_2d_slice_sim.py        Nitsche contact solver (runs in Docker)
-│   ├── animate_pv.py              PyVista GIF + frame export
-│   ├── analyze_forces.py          smoothing, chatter detection, R/I ratio
-│   ├── compare_forces.py          force-displacement overlays
-│   ├── compare_shapes.py          per-shape result-grid composer
-│   ├── compute_initial_gaps.py    reference-shape-based gap calibration
-│   ├── preview_mesh.py            mesh + BC visualization
-│   └── preview_positions.py       initial vs final layout (no simulation)
-├── scripts/                  bash drivers for sweeps
-│   ├── run_2d_pipeline.sh         single-shape: mesh + solve + animate
-│   ├── run_all_shapes.sh          inner loop, called by sweeps below
-│   ├── run_final_sweep.sh         push (insertion) sweep, all 7 shapes
-│   └── run_retention_sweep.sh     retention sweep (auto-starts from push end-state)
-├── docker/                   container build for the contact solver
-│   ├── Dockerfile.asimov          Docker image (used on laptop)
+├── README.md / CONTRIBUTING.md / CODE_OF_CONDUCT.md / LICENSE
+├── pyproject.toml             package metadata + tool configs
+├── requirements.txt           pip dependencies (also declared in pyproject)
+├── src/mis_contact_fea/       importable Python package
+│   ├── config.py                pydantic v2 SimulationConfig schema
+│   ├── profiles/
+│   │   ├── builtins.py            seven hand-coded shape generators
+│   │   ├── from_csv.py            CSV polyline loader (unit-aware)
+│   │   ├── from_svg.py            SVG <path> loader (unit-aware)
+│   │   ├── from_step.py           STEP axisymmetric-section loader
+│   │   └── __init__.py            load_profile() dispatch + unit helpers
+│   ├── mesh/
+│   │   ├── slice_2d.py            2D Gmsh → dolfinx mesh (current)
+│   │   └── solid_3d.py            3D tetrahedral mesh (roadmap)
+│   ├── solver/
+│   │   ├── contact_2d.py          2D Nitsche contact (runs in Docker)
+│   │   └── contact_3d.py          3D contact (roadmap)
+│   ├── postproc/
+│   │   ├── analyze.py             smoothing, chatter detection, R/I ratio
+│   │   ├── animate.py             PyVista GIF + frame export
+│   │   ├── compare_forces.py      force-displacement overlays
+│   │   ├── compare_shapes.py      per-shape result grid
+│   │   ├── compute_initial_gaps.py reference-based gap calibration
+│   │   ├── preview_mesh.py        mesh + BC visualisation
+│   │   └── preview_positions.py   initial vs final layout (no sim)
+│   └── gui/
+│       ├── align_2d.py            Streamlit 2D alignment app
+│       └── align_3d.py            PyVista 3D alignment (roadmap)
+├── scripts/                   bash drivers
+│   ├── run_config.sh             single YAML config → full pipeline
+│   ├── run_configs.sh            batch a list of YAML configs
+│   ├── run_2d_pipeline.sh        legacy single-shape driver (env-var-based)
+│   ├── run_all_shapes.sh         inner loop for the legacy sweeps
+│   ├── run_final_sweep.sh        legacy push sweep, all 7 shapes
+│   ├── run_retention_sweep.sh    legacy retention sweep
+│   ├── build_comparison_plots.sh rebuild plots from existing runs/
+│   └── launch_gui.sh             Streamlit GUI launcher
+├── examples/
+│   ├── README.md                  catalogue / quick reference
+│   ├── 01_seven_builtins/         the published 7-shape sweep, as YAML
+│   ├── 02_custom_csv_profile/     digitized-CSV custom profile demo
+│   ├── 03_from_svg_profile/       Inkscape SVG workflow guide
+│   ├── 04_from_step_profile/      STEP axisymmetric-section workflow guide
+│   └── 05_3d_demo/                placeholder for the future 3D pipeline
+├── tests/                     pytest smoke + loader tests
+├── docker/                    container build
+│   ├── Dockerfile.asimov
 │   ├── build_asimov_image.sh
-│   ├── dolfinx_v0.9.0_contact.def Apptainer/Singularity .def (used on HPC)
+│   ├── dolfinx_v0.9.0_contact.def
 │   └── build_contact_container.sh
-├── hpc/                      SLURM scripts for cluster runs
-│   ├── build_contact_container.slurm
-│   └── run_contact_sim.slurm
-├── notebooks/                exploratory Jupyter work
-│   └── family_2d_geometries_axisym.ipynb
-└── archive/                  legacy 3D pipeline + vendored library
-    ├── asimov-contact/            upstream dolfinx_contact source (reference)
-    ├── cad_models/                STEP files from the original 3D study
-    ├── legacy_3d/                 old 3D Python scripts
-    ├── legacy_scripts/            superseded shell drivers
-    └── legacy_docs/               old RUNBOOK + usage notes
+├── hpc/                       SLURM scripts for cluster runs
+├── notebooks/                 exploratory Jupyter work
+└── archive/                   legacy 3D + vendored asimov-contact source
 ```
 
-Generated outputs (`runs_all_shapes/`, `runs_retention/`, all top-level
-PNGs/CSVs/GIFs) are `.gitignore`'d.
+Generated outputs (`runs_all_shapes/`, `runs_retention/`, top-level
+PNGs/CSVs/GIFs, mesh artifacts, animation frames) are `.gitignore`'d.
 
 ## Quickstart
 
@@ -112,10 +130,36 @@ pip install -e .
 This installs `mis_contact_fea` as an editable package; all the
 sweep scripts invoke it as `python -m mis_contact_fea.<module>`.
 
-### 3. Preview layout (no simulation, ~5 s)
+### 3a. Preview & align in the GUI  (recommended)
+
+The alignment GUI is hosted at **[nanosystemslab.github.io/mis-contact-fea](https://nanosystemslab.github.io/mis-contact-fea/)** — it
+runs entirely in your browser (Pyodide WASM), nothing is uploaded, no
+account needed.
+
+Pick a shape, drag the `INITIAL_GAP` and `DISP` sliders, watch the
+two-panel preview update live, then **Download** the YAML and run it
+locally with:
 
 ```bash
-python3 src/preview_positions.py
+./scripts/run_config.sh path/to/downloaded.yaml
+```
+
+To run the GUI locally instead of in-browser (e.g. for editing the
+notebook):
+
+```bash
+pip install -e ".[gui-marimo]"
+marimo run src/mis_contact_fea/gui/align_marimo.py
+```
+
+A legacy Streamlit version is also available — `./scripts/launch_gui.sh`
+(install with `pip install -e ".[gui]"` first). The Marimo version is
+preferred because it deploys to GitHub Pages and has no cold-start.
+
+### 3b. Preview without simulating (no GUI, ~5 s)
+
+```bash
+python3 -m mis_contact_fea.postproc.preview_positions
 open preview_positions.png
 ```
 
@@ -124,14 +168,23 @@ Edit `SHAPE_CONFIGS` at the top of that file (or pass
 each shape's starting gap and total displacement before committing to a
 long sweep.
 
-### 4. Run the insertion sweep
+### 4. Run a single config
 
 ```bash
-./scripts/run_final_sweep.sh
+./scripts/run_config.sh examples/01_seven_builtins/sphere_push.yaml
 ```
 
-Per-shape parameters live in tables at the top of the script. Override
-any of them via env vars, e.g.:
+The pipeline reads `output.out_dir` from the YAML and writes mesh,
+results, animation, and run log there.
+
+### 4b. Run a batch (the classic 7-shape sweep)
+
+```bash
+./scripts/run_configs.sh examples/01_seven_builtins/*_push.yaml
+./scripts/run_configs.sh examples/01_seven_builtins/*_retention.yaml
+```
+
+The legacy env-var-driven sweeps still work too:
 
 ```bash
 SHAPES="cone doublecone" ./scripts/run_final_sweep.sh

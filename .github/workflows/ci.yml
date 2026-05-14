@@ -1,0 +1,57 @@
+name: CI
+
+# Runs pytest + the Marimo WASM build dry-run on every push and PR.
+# The simulation itself (Docker + dolfinx) is not exercised in CI —
+# that's covered by the local smoke tests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package + test deps
+        run: |
+          pip install -e ".[dev,svg]"
+
+      - name: Run pytest
+        run: pytest -v
+
+  wasm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install marimo
+        run: pip install --quiet marimo
+
+      - name: Dry-run Marimo WASM export (catches syntax / cell-graph errors)
+        run: |
+          marimo export html-wasm \
+            src/mis_contact_fea/gui/align_marimo.py \
+            -o /tmp/wasm-build \
+            --mode run
+
+      - name: Sanity check output
+        run: |
+          test -f /tmp/wasm-build/index.html
+          test -d /tmp/wasm-build/assets
+          echo "WASM build OK"

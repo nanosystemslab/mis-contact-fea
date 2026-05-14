@@ -54,9 +54,11 @@ def main() -> None:
         description="2D plane-strain displacement-controlled contact simulation.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--mesh-dir", type=Path, default=Path("mesh_out_2d"))
-    parser.add_argument("--out-dir", type=Path, default=Path("results_2d"))
-    parser.add_argument("--steps", type=int, default=20)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="YAML simulation config (provides defaults for the flags below).")
+    parser.add_argument("--mesh-dir", type=Path, default=None)
+    parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--disp-um", type=float, default=None,
                         help="Total top-plate downward displacement (µm). "
                              "If unset, defaults to initial_gap + 3*z_apex so "
@@ -64,29 +66,84 @@ def main() -> None:
     parser.add_argument("--E-mpa", type=float, default=200000.0,
                         help="Young's modulus in MPa.")
     parser.add_argument("--nu", type=float, default=0.3)
-    parser.add_argument("--fric", type=float, default=0.3)
+    parser.add_argument("--fric", type=float, default=None)
     parser.add_argument("--q-degree", type=int, default=5)
-    parser.add_argument("--gamma-scale", type=float, default=10.0)
+    parser.add_argument("--gamma-scale", type=float, default=None)
     parser.add_argument("--no-update-contact", action="store_true")
     parser.add_argument("--newton-max-it", type=int, default=40)
-    parser.add_argument("--newton-rtol", type=float, default=1e-7)
-    parser.add_argument("--newton-atol", type=float, default=1e-7)
+    parser.add_argument("--newton-rtol", type=float, default=None)
+    parser.add_argument("--newton-atol", type=float, default=None)
     parser.add_argument("--relax", type=float, default=1.0)
     parser.add_argument("--ksp-rtol", type=float, default=1e-6)
     parser.add_argument("--ksp-atol", type=float, default=1e-10)
     parser.add_argument("--ksp-max-it", type=int, default=2000)
-    parser.add_argument("--ksp-type", type=str, default="fgmres")
-    parser.add_argument("--pc-type", type=str, default="gamg")
+    parser.add_argument("--ksp-type", type=str, default=None)
+    parser.add_argument("--pc-type", type=str, default=None)
     parser.add_argument("--contact-mode", choices=["closest", "raytracing"],
-                        default="raytracing",
+                        default=None,
                         help="dolfinx_contact pair-detection mode. raytracing "
                              "shoots normals to find genuine surface contacts; "
                              "closest can produce spurious cross-cell pairs.")
-    parser.add_argument("--direction", choices=["down", "up"], default="down",
+    parser.add_argument("--direction", choices=["down", "up"], default=None,
                         help="Direction the top plate moves. down = push-in "
                              "(default), up = retention/pull-out. Total disp "
                              "magnitude controlled by --disp-um.")
     args = parser.parse_args()
+
+    # If --config is given, fill any unset flag from the config; explicit
+    # flags always win. Otherwise apply the legacy defaults.
+    if args.config is not None:
+        from mis_contact_fea.config import SimulationConfig
+
+        cfg = SimulationConfig.from_yaml(args.config)
+        if args.mesh_dir is None:
+            args.mesh_dir = cfg.mesh_dir
+        if args.out_dir is None:
+            args.out_dir = cfg.results_dir
+        if args.steps is None:
+            args.steps = cfg.solver.steps
+        if args.disp_um is None:
+            args.disp_um = cfg.solver.disp_um
+        if args.fric is None:
+            args.fric = cfg.solver.fric
+        if args.gamma_scale is None:
+            args.gamma_scale = cfg.solver.gamma_scale
+        if args.newton_rtol is None:
+            args.newton_rtol = cfg.solver.newton_rtol
+        if args.newton_atol is None:
+            args.newton_atol = cfg.solver.newton_atol
+        if args.ksp_type is None:
+            args.ksp_type = cfg.solver.ksp_type
+        if args.pc_type is None:
+            args.pc_type = cfg.solver.pc_type
+        if args.contact_mode is None:
+            args.contact_mode = cfg.solver.contact_mode
+        if args.direction is None:
+            args.direction = cfg.solver.direction
+
+    # Legacy defaults for the no-config path (preserves old CLI behavior).
+    if args.mesh_dir is None:
+        args.mesh_dir = Path("mesh_out_2d")
+    if args.out_dir is None:
+        args.out_dir = Path("results_2d")
+    if args.steps is None:
+        args.steps = 20
+    if args.fric is None:
+        args.fric = 0.3
+    if args.gamma_scale is None:
+        args.gamma_scale = 10.0
+    if args.newton_rtol is None:
+        args.newton_rtol = 1e-7
+    if args.newton_atol is None:
+        args.newton_atol = 1e-7
+    if args.ksp_type is None:
+        args.ksp_type = "fgmres"
+    if args.pc_type is None:
+        args.pc_type = "gamg"
+    if args.contact_mode is None:
+        args.contact_mode = "raytracing"
+    if args.direction is None:
+        args.direction = "down"
 
     if args.E_mpa <= 0:
         raise ValueError(f"E must be > 0, got {args.E_mpa}")

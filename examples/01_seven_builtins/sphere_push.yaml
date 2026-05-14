@@ -1,0 +1,23 @@
+geometry:
+  pitch_um: 198.0
+  Hp_um: 220.0
+  plate_um: 30.0
+  initial_gap_um: -55.0
+profile:
+  kind: builtin
+  name: sphere
+mesh:
+  characteristic_size_um: 4.0
+solver:
+  steps: 425
+  disp_um: 85.0
+  direction: down
+  contact_mode: raytracing
+  fric: 0.0
+  newton_rtol: 0.2
+  newton_atol: 1000.0
+  gamma_scale: 0.2
+  ksp_type: preonly
+  pc_type: lu
+output:
+  out_dir: runs_all_shapes/sphere

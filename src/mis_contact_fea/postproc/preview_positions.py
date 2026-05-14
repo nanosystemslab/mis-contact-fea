@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mis_contact_fea.mesh.slice_2d import bottom_body_vertices, top_body_vertices
+from mis_contact_fea.mesh.layout import bottom_body_vertices, top_body_vertices
 from mis_contact_fea.profiles import SHAPES
 
 
