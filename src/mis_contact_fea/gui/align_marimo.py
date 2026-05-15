@@ -408,7 +408,45 @@ def _(np):
             )
         return x, z
 
-    return load_csv_bytes, load_svg_bytes
+    def load_csv_outline_bytes(data, units="um"):
+        """Full closed 2D outline loader (no axis contract, no pillar)."""
+        scale = _UM_PER_UNIT[units]
+        text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
+        reader = _csv.reader(_io.StringIO(text))
+        rows_raw = [r for r in reader if r and not r[0].startswith("#")]
+        if not rows_raw:
+            raise ValueError("CSV is empty")
+        if _looks_like_header(rows_raw[0]):
+            rows_raw = rows_raw[1:]
+        x = np.array([float(r[0]) for r in rows_raw]) * scale
+        z = np.array([float(r[1]) for r in rows_raw]) * scale
+        if not (np.isfinite(x).all() and np.isfinite(z).all()):
+            raise ValueError("non-finite values in CSV outline")
+        return x, z
+
+    def load_svg_outline_bytes(data, units="um", samples=300, flip_y=True):
+        """Full closed 2D outline loader across ALL <path> elements."""
+        from svgpathtools import svgstr2paths
+        scale = _UM_PER_UNIT[units]
+        text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
+        paths, _attrs = svgstr2paths(text)
+        if not paths:
+            raise ValueError("no <path> elements found in SVG")
+        outlines = []
+        for svg_path in paths:
+            ts = np.linspace(0.0, 1.0, samples)
+            pts = np.array([svg_path.point(t) for t in ts])
+            x = pts.real.astype(float)
+            y = pts.imag.astype(float)
+            if flip_y:
+                y = -y
+            outlines.append((x * scale, y * scale))
+        return outlines  # list of (x, z) per path
+
+    return (
+        load_csv_bytes, load_csv_outline_bytes,
+        load_svg_bytes, load_svg_outline_bytes,
+    )
 
 
 @app.cell
@@ -465,7 +503,86 @@ def _(np):
         add(0.0, inner, "sym_left")
         return np.array(vx), np.array(vz), tags
 
-    return bottom_body_vertices, top_body_vertices
+    def _outline_body_layout(outlines_xz, P, plate_thickness, mirror_z=None,
+                             plate_above=False):
+        """Build a body from one-or-more closed 2D outlines + auto plate.
+
+        - `outlines_xz`: list of (x, z) numpy arrays (closed loops).
+        - `P`: cell pitch in µm.
+        - `plate_thickness`: thickness of the auto-added plate.
+        - `mirror_z`: if not None, z-coordinate to mirror the outline
+          across (used to flip the top body so its 'bottom' faces the
+          bottom body).
+        - `plate_above`: when True, the plate sits ABOVE the body
+          (top-body convention).
+
+        Each outline is translated so the population is x-centered at
+        x=P/2 (the cell midline). The plate spans the full pitch and
+        sits directly below (or above) the outline group.
+        """
+        if not outlines_xz:
+            raise ValueError("outline list is empty")
+
+        # Combine bounds across all outlines for centering.
+        all_x = np.concatenate([np.asarray(x) for x, _z in outlines_xz])
+        all_z = np.concatenate([np.asarray(z) for _x, z in outlines_xz])
+        x_center = 0.5 * (all_x.min() + all_x.max())
+        x_shift = P / 2.0 - x_center
+        z_min = float(all_z.min())
+        z_max = float(all_z.max())
+
+        # Move outlines so their z floor is at 0 (then plate below at z<0).
+        z_shift = -z_min
+        if mirror_z is not None:
+            # Mirror across mirror_z: z' = 2*mirror_z - z. Then shift.
+            pass  # handled below per-outline
+
+        body_polygons = []
+        for x_arr, z_arr in outlines_xz:
+            xs = np.asarray(x_arr, dtype=float) + x_shift
+            zs = np.asarray(z_arr, dtype=float) + z_shift
+            if mirror_z is not None:
+                # Reflect around the supplied z (which is in already-shifted coords)
+                zs = 2.0 * mirror_z - zs
+                # Reversing keeps CCW orientation after reflection.
+                xs = xs[::-1]; zs = zs[::-1]
+            body_polygons.append((xs, zs))
+
+        z_body_lo = min(z.min() for _x, z in body_polygons)
+        z_body_hi = max(z.max() for _x, z in body_polygons)
+        if plate_above:
+            plate_inner = z_body_hi
+            plate_outer = z_body_hi + plate_thickness
+            plate_face_tag = "top_disp"
+            body_face_tag = "top_contact"
+        else:
+            plate_inner = z_body_lo
+            plate_outer = z_body_lo - plate_thickness
+            plate_face_tag = "bottom_fixed"
+            body_face_tag = "bottom_contact"
+
+        # Build a single combined polygon. For multiple disjoint
+        # outlines, we connect them through the plate (visually one
+        # body; the contact tags isolate the surfaces).
+        # Simpler approach for now: emit each outline separately, plus
+        # one plate polygon. Caller (gmsh assembly) handles multiple
+        # surfaces. The marimo preview just plots them.
+        return {
+            "plate": [
+                (0.0, plate_outer, plate_face_tag),
+                (P,   plate_outer, "sym_right"),
+                (P,   plate_inner, "sym_right"),
+                (0.0, plate_inner, "sym_left"),
+            ],
+            "outlines": body_polygons,
+            "body_face_tag": body_face_tag,
+            "z_lo": min(z_body_lo, plate_outer, plate_inner),
+            "z_hi": max(z_body_hi, plate_outer, plate_inner),
+            "z_apex": z_body_hi,
+            "z_floor": z_body_lo,
+        }
+
+    return _outline_body_layout, bottom_body_vertices, top_body_vertices
 
 
 @app.cell
@@ -677,19 +794,22 @@ def _(out_dir):
 @app.cell
 def _(
     Hp_um, SHAPES, asymmetric, bottom_file, bottom_kind, bottom_prepend,
-    load_csv_bytes, load_svg_bytes, mo, shape, units,
+    load_csv_bytes, load_csv_outline_bytes, load_svg_bytes, load_svg_outline_bytes,
+    mo, shape, units,
     top_file, top_kind, top_prepend, top_shape,
 ):
-    """Resolve the bottom and top right-half polylines from whichever
-    source is selected. Returns the polylines and any error message so
-    the preview cell can render an alert if a file upload failed."""
+    """Resolve each body's geometry. Tries right-half loaders first;
+    if they fail (e.g., uploaded file is a full closed cross-section
+    that doesn't touch the axis), falls back to outline-mode loaders
+    that accept any closed 2D polygon(s).
+
+    Returns:
+      - (half_x, half_z) when mode == "right_half" (legacy axisymmetric)
+      - list of (x, z) outlines when mode == "outline"
+    """
     profile_error = None
 
-    def _resolve(kind, builtin_name, uploaded_file, prepend):
-        if kind == "builtin":
-            return SHAPES[builtin_name](Hp=Hp_um)
-        if not uploaded_file.value:
-            return None
+    def _try_right_half(kind, uploaded_file, prepend):
         entry = uploaded_file.value[0]
         contents = entry.contents
         name = entry.name.lower()
@@ -698,33 +818,52 @@ def _(
         return loader(contents, Hp=Hp_um, units=units.value,
                       prepend_pillar=prepend.value)
 
+    def _try_outline(kind, uploaded_file):
+        entry = uploaded_file.value[0]
+        contents = entry.contents
+        name = entry.name.lower()
+        is_svg = name.endswith(".svg") or kind == "svg"
+        if is_svg:
+            return load_svg_outline_bytes(contents, units=units.value)
+        x, z = load_csv_outline_bytes(contents, units=units.value)
+        return [(x, z)]  # CSV → single polygon
+
+    def _resolve(kind, builtin_name, uploaded_file, prepend):
+        """Return (mode, data). data shape depends on mode."""
+        if kind == "builtin":
+            return "right_half", SHAPES[builtin_name](Hp=Hp_um)
+        if not uploaded_file.value:
+            return None, None
+        # Try right-half first (back-compat). Fall back to outline.
+        try:
+            return "right_half", _try_right_half(kind, uploaded_file, prepend)
+        except Exception:
+            return "outline", _try_outline(kind, uploaded_file)
+
     try:
-        bot = _resolve(bottom_kind.value, shape.value, bottom_file, bottom_prepend)
+        bot_mode, bot_data = _resolve(bottom_kind.value, shape.value, bottom_file, bottom_prepend)
     except Exception as e:  # noqa: BLE001
         profile_error = f"Bottom profile error: {e}"
-        bot = SHAPES["sphere"](Hp=Hp_um)
+        bot_mode, bot_data = "right_half", SHAPES["sphere"](Hp=Hp_um)
 
-    if bot is None:
+    if bot_data is None:
         profile_error = "Upload a bottom CSV/SVG, or switch source back to 'builtin'."
-        half_x, half_z = SHAPES["sphere"](Hp=Hp_um)
-    else:
-        half_x, half_z = bot
+        bot_mode, bot_data = "right_half", SHAPES["sphere"](Hp=Hp_um)
 
     if asymmetric.value:
         try:
-            tp = _resolve(top_kind.value, top_shape.value, top_file, top_prepend)
+            top_mode, top_data = _resolve(top_kind.value, top_shape.value,
+                                          top_file, top_prepend)
         except Exception as e:  # noqa: BLE001
             profile_error = (profile_error + " | " if profile_error else "") + f"Top profile error: {e}"
-            tp = SHAPES["cap"](Hp=Hp_um)
-        if tp is None:
+            top_mode, top_data = "right_half", SHAPES["cap"](Hp=Hp_um)
+        if top_data is None:
             profile_error = (profile_error + " | " if profile_error else "") + "Upload a top CSV/SVG."
-            top_half_x, top_half_z = SHAPES["cap"](Hp=Hp_um)
-        else:
-            top_half_x, top_half_z = tp
+            top_mode, top_data = "right_half", SHAPES["cap"](Hp=Hp_um)
     else:
-        top_half_x, top_half_z = half_x, half_z
+        top_mode, top_data = bot_mode, bot_data
 
-    return half_x, half_z, profile_error, top_half_x, top_half_z
+    return bot_data, bot_mode, profile_error, top_data, top_mode
 
 
 @app.cell
@@ -735,62 +874,94 @@ def _(mo, profile_error):
 
 @app.cell
 def _(
-    asymmetric, bottom_body_vertices, dir_value, disp_um, half_x, half_z,
-    initial_gap_um, np, pitch_um, plate_um, plt, shape,
-    top_body_vertices, top_half_x, top_half_z, top_shape, units,
+    _outline_body_layout, asymmetric, bot_data, bot_mode,
+    bottom_body_vertices, dir_value, disp_um, initial_gap_um, np,
+    pitch_um, plate_um, plt, shape, top_body_vertices, top_data, top_mode,
+    top_shape, units,
 ):
-    """Two-panel matplotlib preview, with optional asymmetric top body.
-    All polylines and the matplotlib pipeline run in µm; we relabel axes
-    in the user's chosen unit so numbers match the sliders."""
+    """Two-panel preview supporting both right-half and outline modes."""
     _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
     _to_unit = 1.0 / _UM_PER_UNIT[units.value]
     _u = units.value
-    if asymmetric.value:
-        bottom_z_apex_arg = float(np.asarray(half_z).max())
-    else:
-        bottom_z_apex_arg = None
 
-    bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch_um, plate_um)
-    tvx, tvz_init, _ = top_body_vertices(
-        top_half_x, top_half_z, pitch_um, plate_um, initial_gap_um,
-        bottom_z_apex=bottom_z_apex_arg,
-    )
-    bvx, bvz = np.asarray(bvx), np.asarray(bvz)
-    tvx, tvz_init = np.asarray(tvx), np.asarray(tvz_init)
+    # --- Build the BOTTOM body as a list of (x, z) polygons (filled). ---
+    if bot_mode == "right_half":
+        half_x, half_z = bot_data
+        bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch_um, plate_um)
+        bottom_polys = [(np.asarray(bvx), np.asarray(bvz))]
+        bot_z_apex = float(np.asarray(half_z).max())
+    else:  # outline
+        layout = _outline_body_layout(bot_data, pitch_um, plate_um, plate_above=False)
+        bottom_polys = [(np.asarray([p[0] for p in layout["plate"]]),
+                         np.asarray([p[1] for p in layout["plate"]]))]
+        bottom_polys.extend(layout["outlines"])
+        bot_z_apex = layout["z_apex"]
+
+    # --- Build the TOP body. For outline mode we mirror across an axis
+    #     placed `initial_gap` above the bottom apex so the bodies face
+    #     each other; for right-half mode the existing top_body_vertices
+    #     handles the mirror internally.
+    if top_mode == "right_half":
+        if asymmetric.value:
+            bottom_z_apex_arg = bot_z_apex
+        else:
+            bottom_z_apex_arg = None
+        top_half_x, top_half_z = top_data
+        tvx, tvz_init, _ = top_body_vertices(
+            top_half_x, top_half_z, pitch_um, plate_um, initial_gap_um,
+            bottom_z_apex=bottom_z_apex_arg,
+        )
+        top_polys_init = [(np.asarray(tvx), np.asarray(tvz_init))]
+    else:  # outline
+        # Position the top outline so its lowest point sits at
+        # bot_z_apex + initial_gap. Then mirror around that.
+        all_z_top = np.concatenate([np.asarray(z) for _x, z in top_data])
+        top_floor = float(all_z_top.min())
+        target_floor_z = bot_z_apex + initial_gap_um
+        z_pre_shift = target_floor_z - top_floor
+        # Translate outlines first, then we mirror via _outline_body_layout
+        shifted = [(np.asarray(x), np.asarray(z) + z_pre_shift) for x, z in top_data]
+        # We want plate ABOVE the body; use plate_above=True.
+        layout_t = _outline_body_layout(shifted, pitch_um, plate_um, plate_above=True)
+        top_polys_init = [(np.asarray([p[0] for p in layout_t["plate"]]),
+                           np.asarray([p[1] for p in layout_t["plate"]]))]
+        top_polys_init.extend(layout_t["outlines"])
 
     sign = -1.0 if dir_value == "down" else +1.0
-    tvz_final = tvz_init + sign * disp_um
+    def _shift_polys(polys, dz):
+        return [(x, z + dz) for x, z in polys]
+    top_polys_final = _shift_polys(top_polys_init, sign * disp_um)
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 6), dpi=110)
-    # Auto-fit viewport to body extent (plus pitch lines), not the fixed
-    # 198-µm window that hid mm-scale parts off-screen.
-    x_lo_body = min(bvx.min(), tvx.min(), 0.0)
-    x_hi_body = max(bvx.max(), tvx.max(), pitch_um)
-    z_lo = min(bvz.min(), tvz_init.min(), tvz_final.min())
-    z_hi = max(bvz.max(), tvz_init.max(), tvz_final.max())
-    x_pad = 0.05 * (x_hi_body - x_lo_body + 1.0)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 8), dpi=110)
+    all_x = np.concatenate([x for x, _z in bottom_polys + top_polys_init + top_polys_final])
+    all_z = np.concatenate([z for _x, z in bottom_polys + top_polys_init + top_polys_final])
+    x_lo = min(all_x.min(), 0.0); x_hi = max(all_x.max(), pitch_um)
+    z_lo = float(all_z.min()); z_hi = float(all_z.max())
+    x_pad = 0.05 * (x_hi - x_lo + 1.0)
     z_pad = 0.02 * (z_hi - z_lo + 1.0)
 
-    for ax, tvz, title in [
-        (axes[0], tvz_init,  "initial   (top plate disp = 0)"),
-        (axes[1], tvz_final, f"final     (top plate disp = {(sign * disp_um) * _to_unit:+.3g} {_u})"),
+    for ax, top_polys, title in [
+        (axes[0], top_polys_init,  "initial   (top plate disp = 0)"),
+        (axes[1], top_polys_final, f"final     (top plate disp = {(sign * disp_um) * _to_unit:+.3g} {_u})"),
     ]:
-        # Convert µm coords to user units for display.
-        ax.fill(bvx * _to_unit, bvz * _to_unit,
-                facecolor="#A8C8E8", edgecolor="#1F4F8B", linewidth=1.2)
-        ax.fill(tvx * _to_unit, tvz * _to_unit,
-                facecolor="#F5C58C", edgecolor="#9C4A14", linewidth=1.2)
-        ax.axvline(0.0,                    linestyle="--", color="#888", linewidth=0.8)
-        ax.axvline(pitch_um * _to_unit,    linestyle="--", color="#888", linewidth=0.8)
+        for x, z in bottom_polys:
+            ax.fill(x * _to_unit, z * _to_unit,
+                    facecolor="#A8C8E8", edgecolor="#1F4F8B", linewidth=1.0)
+        for x, z in top_polys:
+            ax.fill(x * _to_unit, z * _to_unit,
+                    facecolor="#F5C58C", edgecolor="#9C4A14", linewidth=1.0)
+        ax.axvline(0.0,                 linestyle="--", color="#888", linewidth=0.8)
+        ax.axvline(pitch_um * _to_unit, linestyle="--", color="#888", linewidth=0.8)
         ax.set_aspect("equal")
-        ax.set_xlim((x_lo_body - x_pad) * _to_unit, (x_hi_body + x_pad) * _to_unit)
-        ax.set_ylim((z_lo - z_pad) * _to_unit,      (z_hi + z_pad) * _to_unit)
+        ax.set_xlim((x_lo - x_pad) * _to_unit, (x_hi + x_pad) * _to_unit)
+        ax.set_ylim((z_lo - z_pad) * _to_unit, (z_hi + z_pad) * _to_unit)
         ax.grid(alpha=0.2)
         ax.set_xlabel(f"x ({_u})")
         ax.set_ylabel(f"z ({_u})")
         ax.set_title(title, fontsize=10)
-    bot_label = shape.value
-    top_label = top_shape.value
+
+    bot_label = shape.value if bot_mode == "right_half" else "outline"
+    top_label = top_shape.value if top_mode == "right_half" else "outline"
     pair_label = f"{bot_label} ↔ {top_label}" if asymmetric.value else bot_label
     fig.suptitle(
         f"{pair_label} — IG = {initial_gap_um * _to_unit:+g} {_u}, "
