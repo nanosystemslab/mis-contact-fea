@@ -5,6 +5,7 @@
 #     "numpy",
 #     "matplotlib",
 #     "pyyaml",
+#     "svgpathtools",
 # ]
 # ///
 """Marimo + WASM port of the 2D alignment GUI.
@@ -310,6 +311,108 @@ def _(np):
 
 @app.cell
 def _(np):
+    """Inlined bytes-based loaders for CSV / SVG profile uploads.
+
+    The package versions in `mis_contact_fea.profiles.from_csv` and
+    `from_svg` take filesystem paths; in the browser we receive bytes
+    from `mo.ui.file`, so we re-implement against `io.StringIO`. Mirrors
+    the same polyline contract (start + end on the axis, x >= 0, µm).
+    """
+    import csv as _csv
+    import io as _io
+
+    _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1_000_000.0}
+
+    def _looks_like_header(row):
+        try:
+            float(row[0])
+            return False
+        except (ValueError, IndexError):
+            return True
+
+    def load_csv_bytes(data, Hp=220.0, units="um", prepend_pillar=False, Rxy_p=25.0):
+        scale = _UM_PER_UNIT[units]
+        text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
+        reader = _csv.reader(_io.StringIO(text))
+        rows_raw = [r for r in reader if r and not r[0].startswith("#")]
+        if not rows_raw:
+            raise ValueError("CSV is empty")
+        if _looks_like_header(rows_raw[0]):
+            rows_raw = rows_raw[1:]
+        x = np.array([float(r[0]) for r in rows_raw]) * scale
+        z = np.array([float(r[1]) for r in rows_raw]) * scale
+        if not (np.isfinite(x).all() and np.isfinite(z).all()):
+            raise ValueError("non-finite values in CSV polyline")
+        if (x < -1e-9).any():
+            raise ValueError("x must be >= 0 (right-half profile only)")
+        if prepend_pillar:
+            pillar_x = np.array([0.0, Rxy_p])
+            pillar_z = np.array([-Hp, -Hp])
+            if not (np.isclose(x[0], Rxy_p) and z[0] <= 0):
+                pillar_x = np.concatenate([pillar_x, [Rxy_p]])
+                pillar_z = np.concatenate([pillar_z, [z[0]]])
+            x = np.concatenate([pillar_x, x])
+            z = np.concatenate([pillar_z, z])
+        if abs(x[0]) > 1e-6:
+            raise ValueError(
+                f"first point must be on the axis (x≈0); got x={x[0]:.4f}. "
+                "Enable 'prepend pillar' if your CSV only contains the lobe."
+            )
+        if abs(x[-1]) > 1e-6:
+            raise ValueError(
+                f"last point must be on the axis (x≈0); got x={x[-1]:.4f}"
+            )
+        return x, z
+
+    def load_svg_bytes(data, Hp=220.0, units="um", samples=200, path_index=0,
+                       flip_y=True, prepend_pillar=False, Rxy_p=25.0):
+        from svgpathtools import svgstr2paths
+        scale = _UM_PER_UNIT[units]
+        text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
+        paths, _attrs = svgstr2paths(text)
+        if not paths:
+            raise ValueError("no <path> elements found in SVG")
+        if path_index >= len(paths):
+            raise IndexError(
+                f"path_index={path_index} out of range (file has {len(paths)} paths)"
+            )
+        svg_path = paths[path_index]
+        ts = np.linspace(0.0, 1.0, samples)
+        pts = np.array([svg_path.point(t) for t in ts])
+        x = pts.real.astype(float)
+        y = pts.imag.astype(float)
+        if flip_y:
+            y = -y
+        x -= x.min()
+        x *= scale
+        z = y * scale
+        if x[0] > 1e-3:
+            i0 = int(np.argmin(x))
+            x = np.concatenate([x[i0:], x[:i0]])
+            z = np.concatenate([z[i0:], z[:i0]])
+        on_axis = np.where(x < 1e-3)[0]
+        if len(on_axis) >= 2:
+            x = x[on_axis[0]:on_axis[-1] + 1]
+            z = z[on_axis[0]:on_axis[-1] + 1]
+            x[0] = 0.0
+            x[-1] = 0.0
+        if prepend_pillar:
+            pillar_x = np.array([0.0, Rxy_p, Rxy_p])
+            pillar_z = np.array([-Hp, -Hp, z[0]])
+            x = np.concatenate([pillar_x, x])
+            z = np.concatenate([pillar_z, z])
+        if abs(x[0]) > 1e-3 or abs(x[-1]) > 1e-3:
+            raise ValueError(
+                f"polyline endpoints not on axis (start x={x[0]:.4f}, "
+                f"end x={x[-1]:.4f}). SVG path must start and end on the axis."
+            )
+        return x, z
+
+    return load_csv_bytes, load_svg_bytes
+
+
+@app.cell
+def _(np):
     """Inlined polyline-layout helpers.
 
     SOURCE OF TRUTH: src/mis_contact_fea/mesh/layout.py.
@@ -384,15 +487,40 @@ def _():
 
 @app.cell
 def _(SHAPES, mo):
+    # Bottom-body profile source. `builtin` keeps the original dropdown
+    # workflow; `csv`/`svg` swap in a file uploader.
+    bottom_kind = mo.ui.dropdown(
+        options=["builtin", "csv", "svg"], value="builtin",
+        label="Bottom profile source",
+    )
     shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="sphere", label="Bottom shape")
-    asymmetric = mo.ui.checkbox(value=False, label="Asymmetric pair (different top shape)")
+    bottom_file = mo.ui.file(filetypes=[".csv", ".svg"], kind="area", label="Bottom CSV/SVG")
+    bottom_units = mo.ui.dropdown(
+        options=["um", "mm", "cm", "m"], value="um", label="Bottom units",
+    )
+    bottom_prepend = mo.ui.checkbox(value=False, label="Prepend pillar to bottom lobe")
+
+    asymmetric = mo.ui.checkbox(value=False, label="Asymmetric pair (different top body)")
+
+    top_kind = mo.ui.dropdown(
+        options=["builtin", "csv", "svg"], value="builtin", label="Top profile source",
+    )
     top_shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="cap", label="Top shape")
+    top_file = mo.ui.file(filetypes=[".csv", ".svg"], kind="area", label="Top CSV/SVG")
+    top_units = mo.ui.dropdown(
+        options=["um", "mm", "cm", "m"], value="um", label="Top units",
+    )
+    top_prepend = mo.ui.checkbox(value=False, label="Prepend pillar to top lobe")
+
     direction = mo.ui.radio(
         options=["down (push-in)", "up (retention)"],
         value="down (push-in)",
         label="Direction",
     )
-    return asymmetric, direction, shape, top_shape
+    return (
+        asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
+        direction, shape, top_file, top_kind, top_prepend, top_shape, top_units,
+    )
 
 
 @app.cell
@@ -414,13 +542,29 @@ def _(RECOMMENDED, mo, shape):
 
 
 @app.cell
-def _(asymmetric, direction, disp, initial_gap, mo, shape, steps, top_shape):
-    # Show the top-shape picker only when the asymmetric toggle is on,
-    # otherwise it's hidden and the top body uses the same shape as the
-    # bottom (legacy symmetric pair).
-    top_row = mo.hstack([asymmetric, top_shape]) if asymmetric.value else asymmetric
+def _(
+    asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
+    direction, disp, initial_gap, mo, shape, steps,
+    top_file, top_kind, top_prepend, top_shape, top_units,
+):
+    # Conditionally show shape dropdown (builtin) vs file uploader (csv/svg).
+    if bottom_kind.value == "builtin":
+        bottom_widget = shape
+    else:
+        bottom_widget = mo.vstack([bottom_file, mo.hstack([bottom_units, bottom_prepend])])
+
+    if asymmetric.value:
+        if top_kind.value == "builtin":
+            top_widget = top_shape
+        else:
+            top_widget = mo.vstack([top_file, mo.hstack([top_units, top_prepend])])
+        top_row = mo.vstack([mo.hstack([asymmetric, top_kind]), top_widget])
+    else:
+        top_row = asymmetric
+
     mo.vstack([
-        mo.hstack([shape, direction]),
+        mo.hstack([bottom_kind, direction]),
+        bottom_widget,
         top_row,
         initial_gap,
         disp,
@@ -486,28 +630,75 @@ def _(out_dir):
 
 @app.cell
 def _(
-    Hp,
-    SHAPES,
-    asymmetric,
-    bottom_body_vertices,
-    dir_value,
-    disp,
-    initial_gap,
-    np,
-    pitch,
-    plate,
-    plt,
-    shape,
-    top_body_vertices,
-    top_shape,
+    Hp, SHAPES, asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
+    load_csv_bytes, load_svg_bytes, mo, shape,
+    top_file, top_kind, top_prepend, top_shape, top_units,
 ):
-    """Two-panel matplotlib preview, with optional asymmetric top body."""
-    half_x, half_z = SHAPES[shape.value](Hp=Hp.value)
+    """Resolve the bottom and top right-half polylines from whichever
+    source is selected. Returns the polylines and any error message so
+    the preview cell can render an alert if a file upload failed."""
+    profile_error = None
+
+    def _resolve(kind, builtin_name, uploaded_file, units, prepend):
+        if kind == "builtin":
+            return SHAPES[builtin_name](Hp=Hp.value)
+        if not uploaded_file.value:
+            return None  # nothing uploaded yet
+        entry = uploaded_file.value[0]
+        contents = entry.contents
+        name = entry.name.lower()
+        is_svg = name.endswith(".svg") or kind == "svg"
+        loader = load_svg_bytes if is_svg else load_csv_bytes
+        return loader(contents, Hp=Hp.value, units=units.value,
+                      prepend_pillar=prepend.value)
+
+    try:
+        bot = _resolve(bottom_kind.value, shape.value, bottom_file,
+                       bottom_units, bottom_prepend)
+    except Exception as e:  # noqa: BLE001
+        profile_error = f"Bottom profile error: {e}"
+        bot = SHAPES["sphere"](Hp=Hp.value)  # fallback for preview
+
+    if bot is None:
+        profile_error = "Upload a bottom CSV/SVG, or switch source back to 'builtin'."
+        half_x, half_z = SHAPES["sphere"](Hp=Hp.value)
+    else:
+        half_x, half_z = bot
+
     if asymmetric.value:
-        top_half_x, top_half_z = SHAPES[top_shape.value](Hp=Hp.value)
-        bottom_z_apex_arg = float(np.asarray(half_z).max())
+        try:
+            tp = _resolve(top_kind.value, top_shape.value, top_file,
+                          top_units, top_prepend)
+        except Exception as e:  # noqa: BLE001
+            profile_error = (profile_error + " | " if profile_error else "") + f"Top profile error: {e}"
+            tp = SHAPES["cap"](Hp=Hp.value)
+        if tp is None:
+            profile_error = (profile_error + " | " if profile_error else "") + "Upload a top CSV/SVG."
+            top_half_x, top_half_z = SHAPES["cap"](Hp=Hp.value)
+        else:
+            top_half_x, top_half_z = tp
     else:
         top_half_x, top_half_z = half_x, half_z
+
+    return half_x, half_z, profile_error, top_half_x, top_half_z
+
+
+@app.cell
+def _(mo, profile_error):
+    mo.callout(profile_error, kind="warn") if profile_error else None
+    return
+
+
+@app.cell
+def _(
+    Hp, asymmetric, bottom_body_vertices, dir_value, disp,
+    half_x, half_z, initial_gap, np, pitch, plate, plt,
+    shape, top_body_vertices, top_half_x, top_half_z, top_shape,
+):
+    """Two-panel matplotlib preview, with optional asymmetric top body."""
+    if asymmetric.value:
+        bottom_z_apex_arg = float(np.asarray(half_z).max())
+    else:
         bottom_z_apex_arg = None
 
     bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch.value, plate.value)
@@ -540,8 +731,10 @@ def _(
         ax.set_xlabel("x (µm)")
         ax.set_ylabel("z (µm)")
         ax.set_title(title, fontsize=10)
+    bot_label = shape.value  # used as a display label; the resolver cell
+    top_label = top_shape.value  # has already validated whichever source.
     pair_label = (
-        f"{shape.value} ↔ {top_shape.value}" if asymmetric.value else shape.value
+        f"{bot_label} ↔ {top_label}" if asymmetric.value else bot_label
     )
     fig.suptitle(
         f"{pair_label} — IG = {initial_gap.value:+g} µm, DISP = {disp.value:g} µm, pitch = {pitch.value:g} µm",
@@ -554,28 +747,25 @@ def _(
 
 @app.cell
 def _(
-    Hp,
-    asymmetric,
-    contact_mode,
-    dir_value,
-    disp,
-    fric,
-    gamma_scale,
-    initial_gap,
-    io,
-    mesh_h,
-    newton_atol,
-    newton_rtol,
-    out_dir,
-    pitch,
-    plate,
-    shape,
-    steps,
-    top_shape,
-    yaml,
+    Hp, asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
+    contact_mode, dir_value, disp, fric, gamma_scale, initial_gap, io,
+    mesh_h, newton_atol, newton_rtol, out_dir, pitch, plate, shape, steps,
+    top_file, top_kind, top_prepend, top_shape, top_units, yaml,
 ):
-    """Build the YAML config from current UI state (plain dict — no pydantic
-    needed; the local CLI revalidates with the full pydantic schema)."""
+    """Build the YAML config from current UI state. When a CSV/SVG file
+    is uploaded, the profile block points at `profiles/<filename>` —
+    that file lives alongside the YAML in the downloaded ZIP."""
+
+    def _profile_block(kind, builtin_name, uploaded, units, prepend):
+        if kind == "builtin":
+            return {"kind": "builtin", "name": builtin_name, "units": "um"}
+        if not uploaded.value:
+            return {"kind": kind, "path": "profiles/MISSING_UPLOAD",
+                    "units": units.value, "prepend_pillar": bool(prepend.value)}
+        fname = uploaded.value[0].name
+        return {"kind": kind, "path": f"profiles/{fname}",
+                "units": units.value, "prepend_pillar": bool(prepend.value)}
+
     cfg_dict = {
         "geometry": {
             "pitch_um": float(pitch.value),
@@ -583,12 +773,14 @@ def _(
             "plate_um": float(plate.value),
             "initial_gap_um": float(initial_gap.value),
         },
-        "profile": {"kind": "builtin", "name": shape.value, "units": "um"},
+        "profile": _profile_block(
+            bottom_kind.value, shape.value, bottom_file, bottom_units, bottom_prepend,
+        ),
     }
     if asymmetric.value:
-        cfg_dict["top_profile"] = {
-            "kind": "builtin", "name": top_shape.value, "units": "um",
-        }
+        cfg_dict["top_profile"] = _profile_block(
+            top_kind.value, top_shape.value, top_file, top_units, top_prepend,
+        )
     cfg_dict.update({
         "mesh": {"characteristic_size_um": float(mesh_h.value)},
         "solver": {
@@ -605,9 +797,9 @@ def _(
         },
         "output": {"out_dir": out_dir.value},
     })
-    buf = io.StringIO()
-    yaml.safe_dump(cfg_dict, buf, sort_keys=False, default_flow_style=False)
-    yaml_text = buf.getvalue()
+    _buf = io.StringIO()
+    yaml.safe_dump(cfg_dict, _buf, sort_keys=False, default_flow_style=False)
+    yaml_text = _buf.getvalue()
     return (yaml_text,)
 
 
@@ -618,15 +810,50 @@ def _(mo, yaml_text):
 
 
 @app.cell
-def _(asymmetric, dir_value, mo, shape, top_shape, yaml_text):
+def _(
+    asymmetric, bottom_file, bottom_kind, dir_value, io, mo, shape,
+    top_file, top_kind, top_shape, yaml_text,
+):
+    """Download cell.
+
+    With no file uploads: a plain YAML download (back-compat).
+    With at least one CSV/SVG upload: a ZIP bundle containing the YAML
+    plus `profiles/<name>` files, matching the paths emitted in the
+    YAML preview. The user unzips the bundle and runs the CLI from
+    the unzipped directory.
+    """
+    import zipfile
+
     pair = f"{shape.value}_vs_{top_shape.value}" if asymmetric.value else shape.value
-    fname = f"{pair}_{dir_value}.yaml"
-    download = mo.download(
-        data=yaml_text.encode("utf-8"),
-        filename=fname,
-        mimetype="text/yaml",
-        label=f"Download {fname}",
-    )
+    base = f"{pair}_{dir_value}"
+
+    files_to_bundle = []
+    if bottom_kind.value != "builtin" and bottom_file.value:
+        files_to_bundle.append(bottom_file.value[0])
+    if asymmetric.value and top_kind.value != "builtin" and top_file.value:
+        files_to_bundle.append(top_file.value[0])
+
+    if files_to_bundle:
+        _buf = io.BytesIO()
+        with zipfile.ZipFile(_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{base}.yaml", yaml_text)
+            for entry in files_to_bundle:
+                zf.writestr(f"profiles/{entry.name}", entry.contents)
+        fname = f"{base}.zip"
+        download = mo.download(
+            data=_buf.getvalue(),
+            filename=fname,
+            mimetype="application/zip",
+            label=f"Download {fname} (bundle: YAML + uploaded profile{'s' if len(files_to_bundle) > 1 else ''})",
+        )
+    else:
+        fname = f"{base}.yaml"
+        download = mo.download(
+            data=yaml_text.encode("utf-8"),
+            filename=fname,
+            mimetype="text/yaml",
+            label=f"Download {fname}",
+        )
     download
     return (fname,)
 
