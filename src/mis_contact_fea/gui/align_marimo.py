@@ -547,25 +547,27 @@ def _(
     direction, disp, initial_gap, mo, shape, steps,
     top_file, top_kind, top_prepend, top_shape, top_units,
 ):
-    # Conditionally show shape dropdown (builtin) vs file uploader (csv/svg).
-    if bottom_kind.value == "builtin":
-        bottom_widget = shape
-    else:
-        bottom_widget = mo.vstack([bottom_file, mo.hstack([bottom_units, bottom_prepend])])
+    # Pick the appropriate widget for each body (builtin dropdown vs
+    # file uploader). The top set is always rendered but is only
+    # actually used by the mesher when "Asymmetric pair" is on — see
+    # the resolver cell below.
+    def _body_widget(kind_picker, shape_picker, file_picker, units_picker, prepend_picker):
+        if kind_picker.value == "builtin":
+            return shape_picker
+        return mo.vstack([file_picker, mo.hstack([units_picker, prepend_picker])])
 
-    if asymmetric.value:
-        if top_kind.value == "builtin":
-            top_widget = top_shape
-        else:
-            top_widget = mo.vstack([top_file, mo.hstack([top_units, top_prepend])])
-        top_row = mo.vstack([mo.hstack([asymmetric, top_kind]), top_widget])
-    else:
-        top_row = asymmetric
+    bottom_block = mo.vstack([
+        bottom_kind,
+        _body_widget(bottom_kind, shape, bottom_file, bottom_units, bottom_prepend),
+    ])
+    top_block = mo.vstack([
+        top_kind,
+        _body_widget(top_kind, top_shape, top_file, top_units, top_prepend),
+    ])
 
     mo.vstack([
-        mo.hstack([bottom_kind, direction]),
-        bottom_widget,
-        top_row,
+        mo.hstack([asymmetric, direction]),
+        mo.hstack([bottom_block, top_block]) if asymmetric.value else bottom_block,
         initial_gap,
         disp,
         steps,
