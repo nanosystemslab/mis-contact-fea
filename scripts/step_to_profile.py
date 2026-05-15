@@ -128,30 +128,29 @@ def extract_all_outlines(
         gmsh.model.occ.importShapes(str(step_path))
         gmsh.model.occ.synchronize()
 
-        # Collect every flat-in-extrusion-axis face; dedup pairs that
-        # sit at z=0 vs z=1 (they have identical 2D outlines).
+        # Collect every flat-in-extrusion-axis face. The STEP slab usually
+        # has the cross-section repeated at z=0 and z=1; we group faces
+        # by their extrusion-axis position and keep only the side with
+        # the most geometric content (highest summed face area). That
+        # filters out construction artifacts and avoids duplicating the
+        # outline.
+        from collections import defaultdict
         idx = {"x": (0, 3), "y": (1, 4), "z": (2, 5)}[extrusion_axis]
-        flat_faces: list[tuple[int, tuple]] = []
+        ax_i = {"x": 0, "y": 1, "z": 2}
+        rev_i = ax_i[rev_axis]
+        rad_i = ax_i[radial_axis]
+        faces_by_plane: dict[float, list[tuple[int, float]]] = defaultdict(list)
         for dim, tag in gmsh.model.occ.getEntities(2):
             bb = gmsh.model.getBoundingBox(dim, tag)
             if (bb[idx[1]] - bb[idx[0]]) > 0.01:
                 continue
-            flat_faces.append((tag, bb))
-        # Dedup by (radial, rev) bbox — face at z=0 mirrors face at z=1.
-        seen_bb: set[tuple] = set()
-        unique_faces = []
-        ax_i = {"x": 0, "y": 1, "z": 2}
-        rev_i = ax_i[rev_axis]
-        rad_i = ax_i[radial_axis]
-        for tag, bb in flat_faces:
-            key = (round(bb[rev_i], 3), round(bb[rad_i], 3),
-                   round(bb[rev_i + 3], 3), round(bb[rad_i + 3], 3))
-            if key in seen_bb:
-                continue
-            seen_bb.add(key)
-            unique_faces.append(tag)
-        if not unique_faces:
+            plane = round((bb[idx[0]] + bb[idx[1]]) / 2, 3)
+            faces_by_plane[plane].append((tag, gmsh.model.occ.getMass(dim, tag)))
+        if not faces_by_plane:
             raise RuntimeError(f"no faces flat in {extrusion_axis} found")
+        # Pick the plane (z=0 or z=1) with the most total area.
+        best_plane = max(faces_by_plane, key=lambda p: sum(a for _t, a in faces_by_plane[p]))
+        unique_faces = [t for t, _a in faces_by_plane[best_plane]]
 
         # Mesh all boundaries once.
         gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size / 5)
@@ -425,7 +424,7 @@ def write_svg(path: Path,
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Convert an extruded-2D-sketch STEP file to a right-half profile CSV/SVG.",
+        description="Convert a STEP file (extruded 2D sketch) to a CSV/SVG of its full 2D cross-section.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("step", type=Path, help="Input .step / .stp file.")
@@ -436,27 +435,27 @@ def main() -> None:
     ap.add_argument("--extrusion-axis", choices=["x", "y", "z"], default="z",
                     help="Axis the 2D sketch is extruded along (the thin direction).")
     ap.add_argument("--rev-axis", choices=["x", "y", "z"], default="x",
-                    help="Axis along the body's length (our 'z' / axis of revolution).")
+                    help="Axis along the body's length (becomes our 'z').")
     ap.add_argument("--axis-offset", type=float, default=0.0,
-                    help="Coordinate (in the radial in-plane axis) of the symmetry axis.")
+                    help="Coordinate offset on the radial in-plane axis "
+                         "(translates the geometry so x=0 lands wherever you want).")
     ap.add_argument("--mesh-size", type=float, default=0.1,
                     help="Boundary mesh size (in the STEP file's units).")
-    ap.add_argument("--full-outline", action="store_true",
-                    help="Emit the full closed cross-section outline (both "
-                         "halves) instead of the right-half axis-snapped "
-                         "polyline. Useful for visualization or when the "
-                         "geometry doesn't fit the right-half contract "
-                         "(e.g. socket lobes that don't touch the axis).")
+    ap.add_argument("--right-half", action="store_true",
+                    help="Emit a right-half axis-snapped polyline instead of "
+                         "the full cross-section. Only works for genuinely "
+                         "axisymmetric bodies — the default (full outline) is "
+                         "the general case.")
     args = ap.parse_args()
 
     if not args.step.is_file():
         ap.error(f"STEP file not found: {args.step}")
 
     csv_path = args.csv if args.csv else args.step.with_suffix(".csv")
-    mode = "full-outline" if args.full_outline else "right-half"
+    mode = "right-half" if args.right_half else "full-outline"
     print(f"Extracting profile from {args.step.name} (mode={mode}, units={args.units}, "
           f"extrusion={args.extrusion_axis}, rev={args.rev_axis}, axis_offset={args.axis_offset})")
-    if args.full_outline:
+    if not args.right_half:
         polylines = extract_all_outlines(
             args.step, units=args.units,
             extrusion_axis=args.extrusion_axis, rev_axis=args.rev_axis,
@@ -480,7 +479,10 @@ def main() -> None:
     write_csv(csv_path, x_csv, z_csv)
     print(f"  wrote {csv_path}")
     if args.svg:
-        write_svg(args.svg, polylines, closed=args.full_outline)
+        if args.right_half:
+            write_svg(args.svg, [(x_csv, z_csv)], closed=False)
+        else:
+            write_svg(args.svg, polylines, closed=True)
         print(f"  wrote {args.svg}")
 
 
