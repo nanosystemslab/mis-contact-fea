@@ -625,6 +625,7 @@ def _(SHAPES, mo):
     shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="sphere", label="Bottom shape")
     bottom_file = mo.ui.file(filetypes=[".csv", ".svg"], kind="area", label="Bottom CSV/SVG")
     bottom_prepend = mo.ui.checkbox(value=False, label="Prepend pillar to bottom lobe")
+    bottom_flip_z = mo.ui.checkbox(value=False, label="Flip bottom body in z")
 
     asymmetric = mo.ui.checkbox(value=False, label="Asymmetric pair (different top body)")
 
@@ -634,6 +635,7 @@ def _(SHAPES, mo):
     top_shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="cap", label="Top shape")
     top_file = mo.ui.file(filetypes=[".csv", ".svg"], kind="area", label="Top CSV/SVG")
     top_prepend = mo.ui.checkbox(value=False, label="Prepend pillar to top lobe")
+    top_flip_z = mo.ui.checkbox(value=False, label="Flip top body in z")
 
     direction = mo.ui.radio(
         options=["down (push-in)", "up (retention)"],
@@ -641,8 +643,8 @@ def _(SHAPES, mo):
         label="Direction",
     )
     return (
-        asymmetric, bottom_file, bottom_kind, bottom_prepend,
-        direction, shape, top_file, top_kind, top_prepend, top_shape,
+        asymmetric, bottom_file, bottom_flip_z, bottom_kind, bottom_prepend,
+        direction, shape, top_file, top_flip_z, top_kind, top_prepend, top_shape,
     )
 
 
@@ -677,19 +679,20 @@ def _(
     asymmetric, bottom_file, bottom_kind, bottom_prepend,
     direction, disp, initial_gap, mo, shape, steps, units,
     top_file, top_kind, top_prepend, top_shape,
+    bottom_flip_z, top_flip_z,
 ):
-    def _body_widget(kind_picker, shape_picker, file_picker, prepend_picker):
+    def _body_widget(kind_picker, shape_picker, file_picker, prepend_picker, flip_picker):
         if kind_picker.value == "builtin":
-            return shape_picker
-        return mo.vstack([file_picker, prepend_picker])
+            return mo.vstack([shape_picker, flip_picker])
+        return mo.vstack([file_picker, mo.hstack([prepend_picker, flip_picker])])
 
     bottom_block = mo.vstack([
         bottom_kind,
-        _body_widget(bottom_kind, shape, bottom_file, bottom_prepend),
+        _body_widget(bottom_kind, shape, bottom_file, bottom_prepend, bottom_flip_z),
     ])
     top_block = mo.vstack([
         top_kind,
-        _body_widget(top_kind, top_shape, top_file, top_prepend),
+        _body_widget(top_kind, top_shape, top_file, top_prepend, top_flip_z),
     ])
 
     mo.vstack([
@@ -901,9 +904,9 @@ def _(mo, profile_error):
 @app.cell
 def _(
     asymmetric, bot_data, bot_mode, bottom_body_vertices,
-    bottom_x_offset_um, dir_value, disp_um, initial_gap_um, np,
-    pitch_um, plate_um, plt, shape, top_body_vertices, top_data, top_mode,
-    top_shape, top_x_offset_um, units,
+    bottom_flip_z, bottom_x_offset_um, dir_value, disp_um, initial_gap_um,
+    np, pitch_um, plate_um, plt, shape, top_body_vertices, top_data, top_mode,
+    top_flip_z, top_shape, top_x_offset_um, units,
 ):
     """Two-panel preview supporting both right-half and outline modes."""
     _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
@@ -921,21 +924,28 @@ def _(
         x_shift = P / 2.0 - 0.5 * (float(all_x.min()) + float(all_x.max()))
         return [(np.asarray(x) + x_shift, np.asarray(z)) for x, z in outlines]
 
+    def _flip_z_outlines(outlines):
+        """Negate z and reverse vertex order (keeps CCW after flip)."""
+        return [(np.asarray(x)[::-1], -np.asarray(z)[::-1]) for x, z in outlines]
+
     # --- BOTTOM body ---
     if bot_mode == "right_half":
         half_x, half_z = bot_data
+        if bottom_flip_z.value:
+            # Negate z (apex now negative) and reverse order so half_z[0]
+            # is still the "base" point that bottom_body_vertices uses.
+            half_x = np.asarray(half_x)[::-1]
+            half_z = -np.asarray(half_z)[::-1]
         bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch_um, plate_um)
-        # Apply x offset uniformly. (Plate corners shift too; that's a
-        # visual cue showing the body is no longer aligned with the cell.)
         bottom_polys = [(np.asarray(bvx) + bottom_x_offset_um, np.asarray(bvz))]
         bot_z_apex = float(np.asarray(half_z).max())
     else:
-        centered_b = _outlines_centered(bot_data, pitch_um)
+        bot_outlines = _flip_z_outlines(bot_data) if bottom_flip_z.value else bot_data
+        centered_b = _outlines_centered(bot_outlines, pitch_um)
         all_zb = np.concatenate([np.asarray(z) for _x, z in centered_b])
         z_shift = -float(all_zb.min())
         positioned_b = [(x + bottom_x_offset_um, z + z_shift) for x, z in centered_b]
         bot_z_apex = float(max(z.max() for _x, z in positioned_b))
-        # Plate stays at cell width (not offset) so the periodic cell is honored.
         bottom_polys = [_plate_polygon(pitch_um, 0.0, -plate_um)]
         bottom_polys.extend(positioned_b)
 
@@ -943,15 +953,20 @@ def _(
     if top_mode == "right_half":
         bottom_z_apex_arg = bot_z_apex if asymmetric.value else None
         top_half_x, top_half_z = top_data
+        if top_flip_z.value:
+            top_half_x = np.asarray(top_half_x)[::-1]
+            top_half_z = -np.asarray(top_half_z)[::-1]
         tvx, tvz_init, _ = top_body_vertices(
             top_half_x, top_half_z, pitch_um, plate_um, initial_gap_um,
             bottom_z_apex=bottom_z_apex_arg,
         )
         top_polys_init = [(np.asarray(tvx) + top_x_offset_um, np.asarray(tvz_init))]
     else:
-        centered_t = _outlines_centered(top_data, pitch_um)
+        top_outlines = _flip_z_outlines(top_data) if top_flip_z.value else top_data
+        centered_t = _outlines_centered(top_outlines, pitch_um)
         all_zt = np.concatenate([np.asarray(z) for _x, z in centered_t])
         z_max_t = float(all_zt.max())
+        # Mirror upside down (so the lobe faces the pin), then translate.
         mirrored = [(np.asarray(x)[::-1], -np.asarray(z)[::-1]) for x, z in centered_t]
         floor_after_mirror = -z_max_t
         dz = (bot_z_apex + initial_gap_um) - floor_after_mirror
