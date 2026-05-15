@@ -97,6 +97,123 @@ def _find_cycles(edges: dict[int, set[int]], node_xy: dict[int, tuple[float, flo
     return cycles
 
 
+def extract_all_outlines(
+    step_path: Path,
+    units: str = "mm",
+    extrusion_axis: str = "z",
+    rev_axis: str = "x",
+    axis_offset: float = 0.0,
+    mesh_size: float = 0.1,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Return the closed outlines of *every* face flat in `extrusion_axis`.
+
+    For a revolved body sliced through its rotation axis, the cross-
+    section has two disjoint regions (one on each side of the axis);
+    each is its own face in the STEP. This function returns one
+    polygon per such face so an SVG writer can paint them all.
+
+    Each polygon is returned as `(x_um, z_um)` in our convention, closed
+    (first vertex repeated as last). The z origin is shifted so the
+    global minimum z across all polygons sits at 0.
+    """
+    if rev_axis == extrusion_axis:
+        raise ValueError("rev_axis must differ from extrusion_axis")
+    radial_axis = ({"x", "y", "z"} - {rev_axis, extrusion_axis}).pop()
+    scale = _UNIT_TO_UM[units]
+
+    gmsh.initialize(["-noenv"])
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("step_to_profile")
+        gmsh.model.occ.importShapes(str(step_path))
+        gmsh.model.occ.synchronize()
+
+        # Collect every flat-in-extrusion-axis face; dedup pairs that
+        # sit at z=0 vs z=1 (they have identical 2D outlines).
+        idx = {"x": (0, 3), "y": (1, 4), "z": (2, 5)}[extrusion_axis]
+        flat_faces: list[tuple[int, tuple]] = []
+        for dim, tag in gmsh.model.occ.getEntities(2):
+            bb = gmsh.model.getBoundingBox(dim, tag)
+            if (bb[idx[1]] - bb[idx[0]]) > 0.01:
+                continue
+            flat_faces.append((tag, bb))
+        # Dedup by (radial, rev) bbox — face at z=0 mirrors face at z=1.
+        seen_bb: set[tuple] = set()
+        unique_faces = []
+        ax_i = {"x": 0, "y": 1, "z": 2}
+        rev_i = ax_i[rev_axis]
+        rad_i = ax_i[radial_axis]
+        for tag, bb in flat_faces:
+            key = (round(bb[rev_i], 3), round(bb[rad_i], 3),
+                   round(bb[rev_i + 3], 3), round(bb[rad_i + 3], 3))
+            if key in seen_bb:
+                continue
+            seen_bb.add(key)
+            unique_faces.append(tag)
+        if not unique_faces:
+            raise RuntimeError(f"no faces flat in {extrusion_axis} found")
+
+        # Mesh all boundaries once.
+        gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size / 5)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
+        gmsh.model.mesh.generate(1)
+
+        nt_all, coords_all, _ = gmsh.model.mesh.getNodes()
+        coords_all = np.asarray(coords_all).reshape(-1, 3)
+        node_xy = {
+            int(t): (float(c[rev_i]), float(c[rad_i]))
+            for t, c in zip(nt_all, coords_all)
+        }
+
+        outlines: list[tuple[np.ndarray, np.ndarray]] = []
+        for face_tag in unique_faces:
+            boundary = gmsh.model.getBoundary([(2, face_tag)], oriented=False, recursive=False)
+            edges: dict[int, set[int]] = {}
+            for _bd, ctag in boundary:
+                etypes, _ids, enode_tags = gmsh.model.mesh.getElements(1, ctag)
+                for _et, _eids, enodes in zip(etypes, _ids, enode_tags):
+                    arr = np.asarray(enodes).reshape(-1, 2)
+                    for a, b in arr:
+                        a, b = int(a), int(b)
+                        edges.setdefault(a, set()).add(b)
+                        edges.setdefault(b, set()).add(a)
+            cycles = _find_cycles(edges, node_xy)
+            if not cycles:
+                continue
+            outer = max(cycles, key=lambda c: abs(_signed_area(np.asarray(c))))
+            poly = np.asarray(outer)
+            out_x = (poly[:, 1] - axis_offset) * scale
+            out_z = poly[:, 0] * scale
+            # Close
+            out_x = np.concatenate([out_x, out_x[:1]])
+            out_z = np.concatenate([out_z, out_z[:1]])
+            outlines.append((out_x, out_z))
+
+        # Shift z so global min is at 0.
+        z_min = min(z.min() for _x, z in outlines)
+        outlines = [(x, z - z_min) for (x, z) in outlines]
+        return outlines
+    finally:
+        gmsh.finalize()
+
+
+def extract_outline(
+    step_path: Path,
+    units: str = "mm",
+    extrusion_axis: str = "z",
+    rev_axis: str = "x",
+    axis_offset: float = 0.0,
+    mesh_size: float = 0.1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Single-face wrapper around `extract_all_outlines` for back-compat."""
+    outlines = extract_all_outlines(
+        step_path, units=units, extrusion_axis=extrusion_axis,
+        rev_axis=rev_axis, axis_offset=axis_offset, mesh_size=mesh_size,
+    )
+    # Pick the polygon with the largest |signed area|.
+    return max(outlines, key=lambda p: abs(_signed_area(np.column_stack(p))))
+
+
 def extract_profile(
     step_path: Path,
     units: str = "mm",
@@ -174,8 +291,15 @@ def extract_profile(
         # Polygon's "y" coord = radial direction; symmetry axis at axis_offset.
         # Take portion of the loop where (radial >= axis_offset).
         radial_rel = poly[:, 1] - axis_offset
-        signs = np.sign(radial_rel)
-        signs[signs == 0] = 1  # treat boundary as upper
+        # Sign with tolerance so floating-point noise on the axis edge
+        # (values like -2.7e-15 from a nominal subtract-to-zero) doesn't
+        # create spurious sign flips that would be detected as crossings.
+        # The on-axis-edge case is handled in the elif branch below.
+        radial_tol = 1e-3 * max(np.abs(radial_rel).max(), 1.0)
+        signs = np.zeros_like(radial_rel, dtype=int)
+        signs[radial_rel > radial_tol] = 1
+        signs[radial_rel < -radial_tol] = -1
+        signs[signs == 0] = 1  # treat boundary points as upper
         crossings = np.where(np.diff(signs) != 0)[0]
 
         if len(crossings) >= 2:
@@ -187,11 +311,32 @@ def extract_profile(
             slab = slab.copy()
             slab[0, 1] = axis_offset
             slab[-1, 1] = axis_offset
-        elif (radial_rel >= 0).all():
-            # Lobe sits entirely above the axis. Use it as-is; the lobe
-            # already starts and ends on/near the same edge. Find the
-            # closest points to the axis and rotate to put them at ends.
-            slab = poly.copy()
+        elif (radial_rel >= -radial_tol).all():
+            # Lobe sits entirely above the axis and (typically) touches
+            # the axis along ONE long edge. Trim the closed loop to the
+            # three sides that aren't on the axis: short-end-A → lobe
+            # surface → short-end-B. Endpoints both snap to axis_offset.
+            on_axis = radial_rel < radial_tol
+            if on_axis.any() and not on_axis.all():
+                # Transitions between on-axis and off-axis stretches.
+                trans = np.where(np.diff(on_axis.astype(int)) != 0)[0]
+                if len(trans) >= 2:
+                    # The two corners bracket the off-axis stretch.
+                    # Pick the slice whose interior is OFF the axis.
+                    i0, i1 = int(trans[0]), int(trans[1])
+                    if on_axis[i0]:
+                        # i0+1 is off-axis → take poly[i0+1:i1+2]
+                        slab = poly[i0 + 1:i1 + 2]
+                    else:
+                        # i0+1 is on-axis → wrap around
+                        slab = np.vstack([poly[i1 + 1:], poly[:i0 + 2]])
+                    slab = slab.copy()
+                    slab[0, 1] = axis_offset
+                    slab[-1, 1] = axis_offset
+                else:
+                    slab = poly.copy()
+            else:
+                slab = poly.copy()
         else:
             # Cycle is entirely below the axis — caller probably picked
             # the wrong axis_offset.
@@ -227,22 +372,53 @@ def write_csv(path: Path, x: np.ndarray, z: np.ndarray) -> None:
             f.write(f"{xi:.6f},{zi:.6f}\n")
 
 
-def write_svg(path: Path, x: np.ndarray, z: np.ndarray) -> None:
-    """Emit a single-path SVG of the polyline (units = µm, y flipped to match SVG)."""
-    x_lo, x_hi = float(x.min()), float(x.max())
-    z_lo, z_hi = float(z.min()), float(z.max())
-    pad = 0.05 * max(x_hi - x_lo, z_hi - z_lo, 1.0)
-    vb = f"{x_lo - pad:.3f} {-z_hi - pad:.3f} {(x_hi - x_lo) + 2 * pad:.3f} {(z_hi - z_lo) + 2 * pad:.3f}"
-    # Polyline points: y flipped so positive z runs upward in SVG (svgpathtools
-    # in the GUI flips back via flip_y=True).
-    parts = [f"M {x[0]:.3f} {-z[0]:.3f}"]
-    parts.extend(f"L {xi:.3f} {-zi:.3f}" for xi, zi in zip(x[1:], z[1:]))
-    d = " ".join(parts)
+def write_svg(path: Path,
+              polylines: list[tuple[np.ndarray, np.ndarray]],
+              closed: bool = False) -> None:
+    """Emit an SVG with one `<path>` per polyline.
+
+    Coordinates are in µm; y is flipped so positive z runs upward in
+    the rendered SVG (matches CAD convention).
+    `vector-effect="non-scaling-stroke"` keeps the line visible
+    regardless of zoom — otherwise a 1-unit stroke against a
+    ~40,000-unit viewBox is invisible. `closed=True` closes each
+    path with `Z` and fills it light blue (use for full outlines).
+    """
+    all_x = np.concatenate([x for x, _z in polylines])
+    all_z = np.concatenate([z for _x, z in polylines])
+    x_lo, x_hi = float(all_x.min()), float(all_x.max())
+    z_lo, z_hi = float(all_z.min()), float(all_z.max())
+    w = max(x_hi - x_lo, 1.0)
+    h = max(z_hi - z_lo, 1.0)
+    pad = 0.05 * max(w, h)
+    vb_w = w + 2 * pad
+    vb_h = h + 2 * pad
+    vb = f"{x_lo - pad:.3f} {-z_hi - pad:.3f} {vb_w:.3f} {vb_h:.3f}"
+    aspect = vb_h / vb_w
+    if aspect >= 1:
+        px_h, px_w = 600, int(round(600 / aspect))
+    else:
+        px_w, px_h = 600, int(round(600 * aspect))
+
+    fill = "#cce6ff" if closed else "none"
+    paths = []
+    for x, z in polylines:
+        parts = [f"M {x[0]:.3f} {-z[0]:.3f}"]
+        parts.extend(f"L {xi:.3f} {-zi:.3f}" for xi, zi in zip(x[1:], z[1:]))
+        if closed:
+            parts.append("Z")
+        d = " ".join(parts)
+        paths.append(
+            f'  <path d="{d}" stroke="black" fill="{fill}" '
+            f'stroke-width="1" vector-effect="non-scaling-stroke"/>'
+        )
+
     path.write_text(
         f'<?xml version="1.0"?>\n'
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}">\n'
-        f'  <path d="{d}" stroke="black" fill="none" stroke-width="1"/>\n'
-        f'</svg>\n',
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}" '
+        f'width="{px_w}" height="{px_h}">\n'
+        + "\n".join(paths)
+        + "\n</svg>\n",
         encoding="utf-8",
     )
 
@@ -265,26 +441,46 @@ def main() -> None:
                     help="Coordinate (in the radial in-plane axis) of the symmetry axis.")
     ap.add_argument("--mesh-size", type=float, default=0.1,
                     help="Boundary mesh size (in the STEP file's units).")
+    ap.add_argument("--full-outline", action="store_true",
+                    help="Emit the full closed cross-section outline (both "
+                         "halves) instead of the right-half axis-snapped "
+                         "polyline. Useful for visualization or when the "
+                         "geometry doesn't fit the right-half contract "
+                         "(e.g. socket lobes that don't touch the axis).")
     args = ap.parse_args()
 
     if not args.step.is_file():
         ap.error(f"STEP file not found: {args.step}")
 
     csv_path = args.csv if args.csv else args.step.with_suffix(".csv")
-    print(f"Extracting profile from {args.step.name} (units={args.units}, "
+    mode = "full-outline" if args.full_outline else "right-half"
+    print(f"Extracting profile from {args.step.name} (mode={mode}, units={args.units}, "
           f"extrusion={args.extrusion_axis}, rev={args.rev_axis}, axis_offset={args.axis_offset})")
-    x, z = extract_profile(
-        args.step, units=args.units,
-        extrusion_axis=args.extrusion_axis, rev_axis=args.rev_axis,
-        axis_offset=args.axis_offset, mesh_size=args.mesh_size,
-    )
-    print(f"  polyline: {len(x)} pts, x [{x.min():.1f}, {x.max():.1f}] µm, "
-          f"z [{z.min():.1f}, {z.max():.1f}] µm")
+    if args.full_outline:
+        polylines = extract_all_outlines(
+            args.step, units=args.units,
+            extrusion_axis=args.extrusion_axis, rev_axis=args.rev_axis,
+            axis_offset=args.axis_offset, mesh_size=args.mesh_size,
+        )
+        # CSV: dump the largest polygon (single outline; clients that need
+        # the full geometry should use the SVG).
+        x_csv, z_csv = max(polylines, key=lambda p: abs(_signed_area(np.column_stack(p))))
+        print(f"  {len(polylines)} disjoint face(s); largest = {len(x_csv)} pts, "
+              f"x [{x_csv.min():.1f}, {x_csv.max():.1f}] µm")
+    else:
+        x_csv, z_csv = extract_profile(
+            args.step, units=args.units,
+            extrusion_axis=args.extrusion_axis, rev_axis=args.rev_axis,
+            axis_offset=args.axis_offset, mesh_size=args.mesh_size,
+        )
+        polylines = [(x_csv, z_csv)]
+        print(f"  polyline: {len(x_csv)} pts, x [{x_csv.min():.1f}, {x_csv.max():.1f}] µm, "
+              f"z [{z_csv.min():.1f}, {z_csv.max():.1f}] µm")
 
-    write_csv(csv_path, x, z)
+    write_csv(csv_path, x_csv, z_csv)
     print(f"  wrote {csv_path}")
     if args.svg:
-        write_svg(args.svg, x, z)
+        write_svg(args.svg, polylines, closed=args.full_outline)
         print(f"  wrote {args.svg}")
 
 

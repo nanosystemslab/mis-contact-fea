@@ -486,6 +486,18 @@ def _():
 
 
 @app.cell
+def _(mo):
+    # One global length-unit selector. All geometry sliders, uploaded
+    # CSV/SVG values, and the YAML preview are interpreted in this unit
+    # — internal pipeline still uses µm.
+    units = mo.ui.dropdown(
+        options=["um", "mm", "cm", "m"], value="um",
+        label="Length units",
+    )
+    return (units,)
+
+
+@app.cell
 def _(SHAPES, mo):
     # Bottom-body profile source. `builtin` keeps the original dropdown
     # workflow; `csv`/`svg` swap in a file uploader.
@@ -495,9 +507,6 @@ def _(SHAPES, mo):
     )
     shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="sphere", label="Bottom shape")
     bottom_file = mo.ui.file(filetypes=[".csv", ".svg"], kind="area", label="Bottom CSV/SVG")
-    bottom_units = mo.ui.dropdown(
-        options=["um", "mm", "cm", "m"], value="um", label="Bottom units",
-    )
     bottom_prepend = mo.ui.checkbox(value=False, label="Prepend pillar to bottom lobe")
 
     asymmetric = mo.ui.checkbox(value=False, label="Asymmetric pair (different top body)")
@@ -507,9 +516,6 @@ def _(SHAPES, mo):
     )
     top_shape = mo.ui.dropdown(options=sorted(SHAPES.keys()), value="cap", label="Top shape")
     top_file = mo.ui.file(filetypes=[".csv", ".svg"], kind="area", label="Top CSV/SVG")
-    top_units = mo.ui.dropdown(
-        options=["um", "mm", "cm", "m"], value="um", label="Top units",
-    )
     top_prepend = mo.ui.checkbox(value=False, label="Prepend pillar to top lobe")
 
     direction = mo.ui.radio(
@@ -518,21 +524,29 @@ def _(SHAPES, mo):
         label="Direction",
     )
     return (
-        asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
-        direction, shape, top_file, top_kind, top_prepend, top_shape, top_units,
+        asymmetric, bottom_file, bottom_kind, bottom_prepend,
+        direction, shape, top_file, top_kind, top_prepend, top_shape,
     )
 
 
 @app.cell
-def _(RECOMMENDED, mo, shape):
+def _(RECOMMENDED, mo, shape, units):
+    # Scale factor: divide µm values by this to express them in user units.
+    _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
+    _to_unit = 1.0 / _UM_PER_UNIT[units.value]
     rec_ig, rec_disp, rec_steps = RECOMMENDED[shape.value]
-    initial_gap = mo.ui.slider(
-        start=-250.0, stop=50.0, step=0.5, value=float(rec_ig),
-        label="Initial gap (µm)  —  negative = bodies overlap at start",
+    _u = units.value
+    initial_gap = mo.ui.number(
+        start=-50000.0 * _to_unit, stop=50000.0 * _to_unit,
+        step=max(0.5 * _to_unit, 1e-9),
+        value=float(rec_ig) * _to_unit,
+        label=f"Initial gap ({_u})  —  negative = bodies overlap at start",
     )
-    disp = mo.ui.slider(
-        start=0.5, stop=300.0, step=0.5, value=float(rec_disp),
-        label="Total displacement (µm)",
+    disp = mo.ui.number(
+        start=0.5 * _to_unit, stop=100000.0 * _to_unit,
+        step=max(0.5 * _to_unit, 1e-9),
+        value=float(rec_disp) * _to_unit,
+        label=f"Total displacement ({_u})",
     )
     steps = mo.ui.number(
         start=1, stop=5000, step=5, value=int(rec_steps),
@@ -543,30 +557,27 @@ def _(RECOMMENDED, mo, shape):
 
 @app.cell
 def _(
-    asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
-    direction, disp, initial_gap, mo, shape, steps,
-    top_file, top_kind, top_prepend, top_shape, top_units,
+    asymmetric, bottom_file, bottom_kind, bottom_prepend,
+    direction, disp, initial_gap, mo, shape, steps, units,
+    top_file, top_kind, top_prepend, top_shape,
 ):
-    # Pick the appropriate widget for each body (builtin dropdown vs
-    # file uploader). The top set is always rendered but is only
-    # actually used by the mesher when "Asymmetric pair" is on — see
-    # the resolver cell below.
-    def _body_widget(kind_picker, shape_picker, file_picker, units_picker, prepend_picker):
+    def _body_widget(kind_picker, shape_picker, file_picker, prepend_picker):
         if kind_picker.value == "builtin":
             return shape_picker
-        return mo.vstack([file_picker, mo.hstack([units_picker, prepend_picker])])
+        return mo.vstack([file_picker, prepend_picker])
 
     bottom_block = mo.vstack([
         bottom_kind,
-        _body_widget(bottom_kind, shape, bottom_file, bottom_units, bottom_prepend),
+        _body_widget(bottom_kind, shape, bottom_file, bottom_prepend),
     ])
     top_block = mo.vstack([
         top_kind,
-        _body_widget(top_kind, top_shape, top_file, top_units, top_prepend),
+        _body_widget(top_kind, top_shape, top_file, top_prepend),
     ])
 
     mo.vstack([
-        mo.hstack([asymmetric, direction]),
+        mo.hstack([units, direction]),
+        asymmetric,
         mo.hstack([bottom_block, top_block]) if asymmetric.value else bottom_block,
         initial_gap,
         disp,
@@ -576,12 +587,45 @@ def _(
 
 
 @app.cell
-def _(mo):
-    pitch = mo.ui.slider(start=50.0, stop=400.0, step=1.0, value=198.0, label="Pitch (µm)")
-    Hp = mo.ui.slider(start=80.0, stop=400.0, step=5.0, value=220.0, label="Pillar height Hp (µm)")
-    plate = mo.ui.slider(start=5.0, stop=100.0, step=1.0, value=30.0, label="Plate thickness (µm)")
-    mesh_h = mo.ui.slider(start=1.0, stop=20.0, step=0.5, value=4.0, label="Mesh size (µm)")
+def _(mo, units):
+    _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
+    _to_unit = 1.0 / _UM_PER_UNIT[units.value]
+    _u = units.value
+    pitch = mo.ui.number(
+        start=10.0 * _to_unit, stop=100000.0 * _to_unit,
+        step=max(1.0 * _to_unit, 1e-9), value=198.0 * _to_unit,
+        label=f"Pitch ({_u})",
+    )
+    Hp = mo.ui.number(
+        start=0.0, stop=100000.0 * _to_unit,
+        step=max(1.0 * _to_unit, 1e-9), value=220.0 * _to_unit,
+        label=f"Pillar height Hp ({_u})",
+    )
+    plate = mo.ui.number(
+        start=1.0 * _to_unit, stop=10000.0 * _to_unit,
+        step=max(1.0 * _to_unit, 1e-9), value=30.0 * _to_unit,
+        label=f"Plate thickness ({_u})",
+    )
+    mesh_h = mo.ui.number(
+        start=0.1 * _to_unit, stop=500.0 * _to_unit,
+        step=max(0.5 * _to_unit, 1e-9), value=4.0 * _to_unit,
+        label=f"Mesh size ({_u})",
+    )
     return Hp, mesh_h, pitch, plate
+
+
+@app.cell
+def _(Hp, disp, initial_gap, mesh_h, pitch, plate, units):
+    """Convert user-unit inputs to µm for the rest of the pipeline."""
+    _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
+    _f = _UM_PER_UNIT[units.value]
+    pitch_um = float(pitch.value) * _f
+    Hp_um = float(Hp.value) * _f
+    plate_um = float(plate.value) * _f
+    initial_gap_um = float(initial_gap.value) * _f
+    disp_um = float(disp.value) * _f
+    mesh_um = float(mesh_h.value) * _f
+    return Hp_um, disp_um, initial_gap_um, mesh_um, pitch_um, plate_um
 
 
 @app.cell
@@ -632,51 +676,49 @@ def _(out_dir):
 
 @app.cell
 def _(
-    Hp, SHAPES, asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
-    load_csv_bytes, load_svg_bytes, mo, shape,
-    top_file, top_kind, top_prepend, top_shape, top_units,
+    Hp_um, SHAPES, asymmetric, bottom_file, bottom_kind, bottom_prepend,
+    load_csv_bytes, load_svg_bytes, mo, shape, units,
+    top_file, top_kind, top_prepend, top_shape,
 ):
     """Resolve the bottom and top right-half polylines from whichever
     source is selected. Returns the polylines and any error message so
     the preview cell can render an alert if a file upload failed."""
     profile_error = None
 
-    def _resolve(kind, builtin_name, uploaded_file, units, prepend):
+    def _resolve(kind, builtin_name, uploaded_file, prepend):
         if kind == "builtin":
-            return SHAPES[builtin_name](Hp=Hp.value)
+            return SHAPES[builtin_name](Hp=Hp_um)
         if not uploaded_file.value:
-            return None  # nothing uploaded yet
+            return None
         entry = uploaded_file.value[0]
         contents = entry.contents
         name = entry.name.lower()
         is_svg = name.endswith(".svg") or kind == "svg"
         loader = load_svg_bytes if is_svg else load_csv_bytes
-        return loader(contents, Hp=Hp.value, units=units.value,
+        return loader(contents, Hp=Hp_um, units=units.value,
                       prepend_pillar=prepend.value)
 
     try:
-        bot = _resolve(bottom_kind.value, shape.value, bottom_file,
-                       bottom_units, bottom_prepend)
+        bot = _resolve(bottom_kind.value, shape.value, bottom_file, bottom_prepend)
     except Exception as e:  # noqa: BLE001
         profile_error = f"Bottom profile error: {e}"
-        bot = SHAPES["sphere"](Hp=Hp.value)  # fallback for preview
+        bot = SHAPES["sphere"](Hp=Hp_um)
 
     if bot is None:
         profile_error = "Upload a bottom CSV/SVG, or switch source back to 'builtin'."
-        half_x, half_z = SHAPES["sphere"](Hp=Hp.value)
+        half_x, half_z = SHAPES["sphere"](Hp=Hp_um)
     else:
         half_x, half_z = bot
 
     if asymmetric.value:
         try:
-            tp = _resolve(top_kind.value, top_shape.value, top_file,
-                          top_units, top_prepend)
+            tp = _resolve(top_kind.value, top_shape.value, top_file, top_prepend)
         except Exception as e:  # noqa: BLE001
             profile_error = (profile_error + " | " if profile_error else "") + f"Top profile error: {e}"
-            tp = SHAPES["cap"](Hp=Hp.value)
+            tp = SHAPES["cap"](Hp=Hp_um)
         if tp is None:
             profile_error = (profile_error + " | " if profile_error else "") + "Upload a top CSV/SVG."
-            top_half_x, top_half_z = SHAPES["cap"](Hp=Hp.value)
+            top_half_x, top_half_z = SHAPES["cap"](Hp=Hp_um)
         else:
             top_half_x, top_half_z = tp
     else:
@@ -693,53 +735,67 @@ def _(mo, profile_error):
 
 @app.cell
 def _(
-    Hp, asymmetric, bottom_body_vertices, dir_value, disp,
-    half_x, half_z, initial_gap, np, pitch, plate, plt,
-    shape, top_body_vertices, top_half_x, top_half_z, top_shape,
+    asymmetric, bottom_body_vertices, dir_value, disp_um, half_x, half_z,
+    initial_gap_um, np, pitch_um, plate_um, plt, shape,
+    top_body_vertices, top_half_x, top_half_z, top_shape, units,
 ):
-    """Two-panel matplotlib preview, with optional asymmetric top body."""
+    """Two-panel matplotlib preview, with optional asymmetric top body.
+    All polylines and the matplotlib pipeline run in µm; we relabel axes
+    in the user's chosen unit so numbers match the sliders."""
+    _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
+    _to_unit = 1.0 / _UM_PER_UNIT[units.value]
+    _u = units.value
     if asymmetric.value:
         bottom_z_apex_arg = float(np.asarray(half_z).max())
     else:
         bottom_z_apex_arg = None
 
-    bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch.value, plate.value)
+    bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch_um, plate_um)
     tvx, tvz_init, _ = top_body_vertices(
-        top_half_x, top_half_z, pitch.value, plate.value, initial_gap.value,
+        top_half_x, top_half_z, pitch_um, plate_um, initial_gap_um,
         bottom_z_apex=bottom_z_apex_arg,
     )
     bvx, bvz = np.asarray(bvx), np.asarray(bvz)
     tvx, tvz_init = np.asarray(tvx), np.asarray(tvz_init)
 
     sign = -1.0 if dir_value == "down" else +1.0
-    tvz_final = tvz_init + sign * disp.value
+    tvz_final = tvz_init + sign * disp_um
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4), dpi=110)
-    z_lo = min(bvz.min(), tvz_init.min(), tvz_final.min()) - 10
-    z_hi = max(bvz.max(), tvz_init.max(), tvz_final.max()) + 10
+    fig, axes = plt.subplots(1, 2, figsize=(10, 6), dpi=110)
+    # Auto-fit viewport to body extent (plus pitch lines), not the fixed
+    # 198-µm window that hid mm-scale parts off-screen.
+    x_lo_body = min(bvx.min(), tvx.min(), 0.0)
+    x_hi_body = max(bvx.max(), tvx.max(), pitch_um)
+    z_lo = min(bvz.min(), tvz_init.min(), tvz_final.min())
+    z_hi = max(bvz.max(), tvz_init.max(), tvz_final.max())
+    x_pad = 0.05 * (x_hi_body - x_lo_body + 1.0)
+    z_pad = 0.02 * (z_hi - z_lo + 1.0)
 
     for ax, tvz, title in [
         (axes[0], tvz_init,  "initial   (top plate disp = 0)"),
-        (axes[1], tvz_final, f"final     (top plate disp = {sign * disp.value:+.2f} µm)"),
+        (axes[1], tvz_final, f"final     (top plate disp = {(sign * disp_um) * _to_unit:+.3g} {_u})"),
     ]:
-        ax.fill(bvx, bvz, facecolor="#A8C8E8", edgecolor="#1F4F8B", linewidth=1.2)
-        ax.fill(tvx, tvz, facecolor="#F5C58C", edgecolor="#9C4A14", linewidth=1.2)
-        ax.axvline(0,            linestyle="--", color="#888", linewidth=0.8)
-        ax.axvline(pitch.value,  linestyle="--", color="#888", linewidth=0.8)
+        # Convert µm coords to user units for display.
+        ax.fill(bvx * _to_unit, bvz * _to_unit,
+                facecolor="#A8C8E8", edgecolor="#1F4F8B", linewidth=1.2)
+        ax.fill(tvx * _to_unit, tvz * _to_unit,
+                facecolor="#F5C58C", edgecolor="#9C4A14", linewidth=1.2)
+        ax.axvline(0.0,                    linestyle="--", color="#888", linewidth=0.8)
+        ax.axvline(pitch_um * _to_unit,    linestyle="--", color="#888", linewidth=0.8)
         ax.set_aspect("equal")
-        ax.set_xlim(-15, pitch.value + 15)
-        ax.set_ylim(z_lo, z_hi)
+        ax.set_xlim((x_lo_body - x_pad) * _to_unit, (x_hi_body + x_pad) * _to_unit)
+        ax.set_ylim((z_lo - z_pad) * _to_unit,      (z_hi + z_pad) * _to_unit)
         ax.grid(alpha=0.2)
-        ax.set_xlabel("x (µm)")
-        ax.set_ylabel("z (µm)")
+        ax.set_xlabel(f"x ({_u})")
+        ax.set_ylabel(f"z ({_u})")
         ax.set_title(title, fontsize=10)
-    bot_label = shape.value  # used as a display label; the resolver cell
-    top_label = top_shape.value  # has already validated whichever source.
-    pair_label = (
-        f"{bot_label} ↔ {top_label}" if asymmetric.value else bot_label
-    )
+    bot_label = shape.value
+    top_label = top_shape.value
+    pair_label = f"{bot_label} ↔ {top_label}" if asymmetric.value else bot_label
     fig.suptitle(
-        f"{pair_label} — IG = {initial_gap.value:+g} µm, DISP = {disp.value:g} µm, pitch = {pitch.value:g} µm",
+        f"{pair_label} — IG = {initial_gap_um * _to_unit:+g} {_u}, "
+        f"DISP = {disp_um * _to_unit:g} {_u}, "
+        f"pitch = {pitch_um * _to_unit:g} {_u}",
         fontsize=10,
     )
     fig.tight_layout()
@@ -749,16 +805,17 @@ def _(
 
 @app.cell
 def _(
-    Hp, asymmetric, bottom_file, bottom_kind, bottom_prepend, bottom_units,
-    contact_mode, dir_value, disp, fric, gamma_scale, initial_gap, io,
-    mesh_h, newton_atol, newton_rtol, out_dir, pitch, plate, shape, steps,
-    top_file, top_kind, top_prepend, top_shape, top_units, yaml,
+    Hp_um, asymmetric, bottom_file, bottom_kind, bottom_prepend,
+    contact_mode, dir_value, disp_um, fric, gamma_scale, initial_gap_um, io,
+    mesh_um, newton_atol, newton_rtol, out_dir, pitch_um, plate_um, shape,
+    steps, top_file, top_kind, top_prepend, top_shape, units, yaml,
 ):
-    """Build the YAML config from current UI state. When a CSV/SVG file
-    is uploaded, the profile block points at `profiles/<filename>` —
-    that file lives alongside the YAML in the downloaded ZIP."""
+    """Build the YAML config from current UI state. All geometry values
+    are converted to µm (the schema's canonical unit). Uploaded
+    profiles keep the user's unit declaration so the local CLI loads
+    them with the right scale."""
 
-    def _profile_block(kind, builtin_name, uploaded, units, prepend):
+    def _profile_block(kind, builtin_name, uploaded, prepend):
         if kind == "builtin":
             return {"kind": "builtin", "name": builtin_name, "units": "um"}
         if not uploaded.value:
@@ -770,24 +827,24 @@ def _(
 
     cfg_dict = {
         "geometry": {
-            "pitch_um": float(pitch.value),
-            "Hp_um": float(Hp.value),
-            "plate_um": float(plate.value),
-            "initial_gap_um": float(initial_gap.value),
+            "pitch_um": float(pitch_um),
+            "Hp_um": float(Hp_um),
+            "plate_um": float(plate_um),
+            "initial_gap_um": float(initial_gap_um),
         },
         "profile": _profile_block(
-            bottom_kind.value, shape.value, bottom_file, bottom_units, bottom_prepend,
+            bottom_kind.value, shape.value, bottom_file, bottom_prepend,
         ),
     }
     if asymmetric.value:
         cfg_dict["top_profile"] = _profile_block(
-            top_kind.value, top_shape.value, top_file, top_units, top_prepend,
+            top_kind.value, top_shape.value, top_file, top_prepend,
         )
     cfg_dict.update({
-        "mesh": {"characteristic_size_um": float(mesh_h.value)},
+        "mesh": {"characteristic_size_um": float(mesh_um)},
         "solver": {
             "steps": int(steps.value),
-            "disp_um": float(disp.value),
+            "disp_um": float(disp_um),
             "direction": dir_value,
             "contact_mode": contact_mode.value,
             "fric": float(fric.value),
