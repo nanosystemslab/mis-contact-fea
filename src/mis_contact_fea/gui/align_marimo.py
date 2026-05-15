@@ -728,11 +728,22 @@ def _(mo, units):
         step=max(0.5 * _to_unit, 1e-9), value=4.0 * _to_unit,
         label=f"Mesh size ({_u})",
     )
-    return Hp, mesh_h, pitch, plate
+    bottom_x_offset = mo.ui.number(
+        start=-1_000_000.0 * _to_unit, stop=1_000_000.0 * _to_unit,
+        step=max(0.1 * _to_unit, 1e-9), value=0.0,
+        label=f"Bottom body x-offset ({_u}, negative = left)",
+    )
+    top_x_offset = mo.ui.number(
+        start=-1_000_000.0 * _to_unit, stop=1_000_000.0 * _to_unit,
+        step=max(0.1 * _to_unit, 1e-9), value=0.0,
+        label=f"Top body x-offset ({_u}, negative = left)",
+    )
+    return Hp, bottom_x_offset, mesh_h, pitch, plate, top_x_offset
 
 
 @app.cell
-def _(Hp, disp, initial_gap, mesh_h, pitch, plate, units):
+def _(Hp, bottom_x_offset, disp, initial_gap, mesh_h, pitch, plate,
+       top_x_offset, units):
     """Convert user-unit inputs to µm for the rest of the pipeline."""
     _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
     _f = _UM_PER_UNIT[units.value]
@@ -742,13 +753,21 @@ def _(Hp, disp, initial_gap, mesh_h, pitch, plate, units):
     initial_gap_um = float(initial_gap.value) * _f
     disp_um = float(disp.value) * _f
     mesh_um = float(mesh_h.value) * _f
-    return Hp_um, disp_um, initial_gap_um, mesh_um, pitch_um, plate_um
+    bottom_x_offset_um = float(bottom_x_offset.value) * _f
+    top_x_offset_um = float(top_x_offset.value) * _f
+    return (
+        Hp_um, bottom_x_offset_um, disp_um, initial_gap_um,
+        mesh_um, pitch_um, plate_um, top_x_offset_um,
+    )
 
 
 @app.cell
-def _(Hp, mesh_h, mo, pitch, plate):
+def _(Hp, bottom_x_offset, mesh_h, mo, pitch, plate, top_x_offset):
     mo.accordion({
-        "Geometry (advanced)": mo.vstack([pitch, Hp, plate, mesh_h]),
+        "Geometry (advanced)": mo.vstack([
+            pitch, Hp, plate, mesh_h,
+            mo.hstack([bottom_x_offset, top_x_offset]),
+        ]),
     })
     return
 
@@ -874,10 +893,10 @@ def _(mo, profile_error):
 
 @app.cell
 def _(
-    asymmetric, bot_data, bot_mode,
-    bottom_body_vertices, dir_value, disp_um, initial_gap_um, np,
+    asymmetric, bot_data, bot_mode, bottom_body_vertices,
+    bottom_x_offset_um, dir_value, disp_um, initial_gap_um, np,
     pitch_um, plate_um, plt, shape, top_body_vertices, top_data, top_mode,
-    top_shape, units,
+    top_shape, top_x_offset_um, units,
 ):
     """Two-panel preview supporting both right-half and outline modes."""
     _UM_PER_UNIT = {"um": 1.0, "mm": 1_000.0, "cm": 10_000.0, "m": 1e6}
@@ -899,14 +918,17 @@ def _(
     if bot_mode == "right_half":
         half_x, half_z = bot_data
         bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch_um, plate_um)
-        bottom_polys = [(np.asarray(bvx), np.asarray(bvz))]
+        # Apply x offset uniformly. (Plate corners shift too; that's a
+        # visual cue showing the body is no longer aligned with the cell.)
+        bottom_polys = [(np.asarray(bvx) + bottom_x_offset_um, np.asarray(bvz))]
         bot_z_apex = float(np.asarray(half_z).max())
     else:
         centered_b = _outlines_centered(bot_data, pitch_um)
         all_zb = np.concatenate([np.asarray(z) for _x, z in centered_b])
         z_shift = -float(all_zb.min())
-        positioned_b = [(x, z + z_shift) for x, z in centered_b]
+        positioned_b = [(x + bottom_x_offset_um, z + z_shift) for x, z in centered_b]
         bot_z_apex = float(max(z.max() for _x, z in positioned_b))
+        # Plate stays at cell width (not offset) so the periodic cell is honored.
         bottom_polys = [_plate_polygon(pitch_um, 0.0, -plate_um)]
         bottom_polys.extend(positioned_b)
 
@@ -918,18 +940,15 @@ def _(
             top_half_x, top_half_z, pitch_um, plate_um, initial_gap_um,
             bottom_z_apex=bottom_z_apex_arg,
         )
-        top_polys_init = [(np.asarray(tvx), np.asarray(tvz_init))]
+        top_polys_init = [(np.asarray(tvx) + top_x_offset_um, np.asarray(tvz_init))]
     else:
-        # Center, mirror upside down (so the lobe faces the pin), and
-        # translate so the new lowest point lands at bot_z_apex + initial_gap.
         centered_t = _outlines_centered(top_data, pitch_um)
         all_zt = np.concatenate([np.asarray(z) for _x, z in centered_t])
         z_max_t = float(all_zt.max())
-        # Mirror: z' = -z. Reverse order to keep CCW orientation.
         mirrored = [(np.asarray(x)[::-1], -np.asarray(z)[::-1]) for x, z in centered_t]
         floor_after_mirror = -z_max_t
         dz = (bot_z_apex + initial_gap_um) - floor_after_mirror
-        positioned_t = [(x, z + dz) for x, z in mirrored]
+        positioned_t = [(x + top_x_offset_um, z + dz) for x, z in mirrored]
         top_z_hi = float(max(z.max() for _x, z in positioned_t))
         top_polys_init = [_plate_polygon(pitch_um, top_z_hi, top_z_hi + plate_um)]
         top_polys_init.extend(positioned_t)
