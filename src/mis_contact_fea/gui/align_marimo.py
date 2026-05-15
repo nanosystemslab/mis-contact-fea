@@ -834,8 +834,15 @@ def _(
         name = entry.name.lower()
         is_svg = name.endswith(".svg") or kind == "svg"
         loader = load_svg_bytes if is_svg else load_csv_bytes
-        return loader(contents, Hp=Hp_um, units=units.value,
+        x, z = loader(contents, Hp=Hp_um, units=units.value,
                       prepend_pillar=prepend.value)
+        # If the loader returned a closed loop (start == end as a 2D
+        # point), it's actually a full outline that happens to satisfy
+        # the axis check trivially. Force the outline fallback so the
+        # downstream code treats it as a closed body, not a right-half.
+        if abs(x[0] - x[-1]) < 1e-6 and abs(z[0] - z[-1]) < 1e-6:
+            raise ValueError("closed loop — use outline mode")
+        return x, z
 
     def _try_outline(kind, uploaded_file):
         entry = uploaded_file.value[0]
