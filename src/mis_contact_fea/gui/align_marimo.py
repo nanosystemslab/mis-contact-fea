@@ -503,7 +503,7 @@ def _(np):
         add(0.0, inner, "sym_left")
         return np.array(vx), np.array(vz), tags
 
-    def _outline_body_layout(outlines_xz, P, plate_thickness, mirror_z=None,
+    def outline_body_layout(outlines_xz, P, plate_thickness, mirror_z=None,
                              plate_above=False):
         """Build a body from one-or-more closed 2D outlines + auto plate.
 
@@ -582,7 +582,7 @@ def _(np):
             "z_floor": z_body_lo,
         }
 
-    return _outline_body_layout, bottom_body_vertices, top_body_vertices
+    return outline_body_layout, bottom_body_vertices, top_body_vertices
 
 
 @app.cell
@@ -709,12 +709,12 @@ def _(mo, units):
     _to_unit = 1.0 / _UM_PER_UNIT[units.value]
     _u = units.value
     pitch = mo.ui.number(
-        start=10.0 * _to_unit, stop=100000.0 * _to_unit,
+        start=10.0 * _to_unit, stop=1_000_000.0 * _to_unit,
         step=max(1.0 * _to_unit, 1e-9), value=198.0 * _to_unit,
         label=f"Pitch ({_u})",
     )
     Hp = mo.ui.number(
-        start=0.0, stop=100000.0 * _to_unit,
+        start=0.0, stop=1_000_000.0 * _to_unit,
         step=max(1.0 * _to_unit, 1e-9), value=220.0 * _to_unit,
         label=f"Pillar height Hp ({_u})",
     )
@@ -874,7 +874,7 @@ def _(mo, profile_error):
 
 @app.cell
 def _(
-    _outline_body_layout, asymmetric, bot_data, bot_mode,
+    asymmetric, bot_data, bot_mode,
     bottom_body_vertices, dir_value, disp_um, initial_gap_um, np,
     pitch_um, plate_um, plt, shape, top_body_vertices, top_data, top_mode,
     top_shape, units,
@@ -884,53 +884,58 @@ def _(
     _to_unit = 1.0 / _UM_PER_UNIT[units.value]
     _u = units.value
 
-    # --- Build the BOTTOM body as a list of (x, z) polygons (filled). ---
+    def _plate_polygon(P, z_inner, z_outer):
+        """Cell-spanning plate rectangle. CCW when z_outer < z_inner."""
+        return (np.array([0.0, P, P, 0.0]),
+                np.array([z_outer, z_outer, z_inner, z_inner]))
+
+    def _outlines_centered(outlines, P):
+        """X-center a list of (x, z) outlines on x=P/2."""
+        all_x = np.concatenate([np.asarray(x) for x, _z in outlines])
+        x_shift = P / 2.0 - 0.5 * (float(all_x.min()) + float(all_x.max()))
+        return [(np.asarray(x) + x_shift, np.asarray(z)) for x, z in outlines]
+
+    # --- BOTTOM body ---
     if bot_mode == "right_half":
         half_x, half_z = bot_data
         bvx, bvz, _ = bottom_body_vertices(half_x, half_z, pitch_um, plate_um)
         bottom_polys = [(np.asarray(bvx), np.asarray(bvz))]
         bot_z_apex = float(np.asarray(half_z).max())
-    else:  # outline
-        layout = _outline_body_layout(bot_data, pitch_um, plate_um, plate_above=False)
-        bottom_polys = [(np.asarray([p[0] for p in layout["plate"]]),
-                         np.asarray([p[1] for p in layout["plate"]]))]
-        bottom_polys.extend(layout["outlines"])
-        bot_z_apex = layout["z_apex"]
+    else:
+        centered_b = _outlines_centered(bot_data, pitch_um)
+        all_zb = np.concatenate([np.asarray(z) for _x, z in centered_b])
+        z_shift = -float(all_zb.min())
+        positioned_b = [(x, z + z_shift) for x, z in centered_b]
+        bot_z_apex = float(max(z.max() for _x, z in positioned_b))
+        bottom_polys = [_plate_polygon(pitch_um, 0.0, -plate_um)]
+        bottom_polys.extend(positioned_b)
 
-    # --- Build the TOP body. For outline mode we mirror across an axis
-    #     placed `initial_gap` above the bottom apex so the bodies face
-    #     each other; for right-half mode the existing top_body_vertices
-    #     handles the mirror internally.
+    # --- TOP body ---
     if top_mode == "right_half":
-        if asymmetric.value:
-            bottom_z_apex_arg = bot_z_apex
-        else:
-            bottom_z_apex_arg = None
+        bottom_z_apex_arg = bot_z_apex if asymmetric.value else None
         top_half_x, top_half_z = top_data
         tvx, tvz_init, _ = top_body_vertices(
             top_half_x, top_half_z, pitch_um, plate_um, initial_gap_um,
             bottom_z_apex=bottom_z_apex_arg,
         )
         top_polys_init = [(np.asarray(tvx), np.asarray(tvz_init))]
-    else:  # outline
-        # Position the top outline so its lowest point sits at
-        # bot_z_apex + initial_gap. Then mirror around that.
-        all_z_top = np.concatenate([np.asarray(z) for _x, z in top_data])
-        top_floor = float(all_z_top.min())
-        target_floor_z = bot_z_apex + initial_gap_um
-        z_pre_shift = target_floor_z - top_floor
-        # Translate outlines first, then we mirror via _outline_body_layout
-        shifted = [(np.asarray(x), np.asarray(z) + z_pre_shift) for x, z in top_data]
-        # We want plate ABOVE the body; use plate_above=True.
-        layout_t = _outline_body_layout(shifted, pitch_um, plate_um, plate_above=True)
-        top_polys_init = [(np.asarray([p[0] for p in layout_t["plate"]]),
-                           np.asarray([p[1] for p in layout_t["plate"]]))]
-        top_polys_init.extend(layout_t["outlines"])
+    else:
+        # Center, mirror upside down (so the lobe faces the pin), and
+        # translate so the new lowest point lands at bot_z_apex + initial_gap.
+        centered_t = _outlines_centered(top_data, pitch_um)
+        all_zt = np.concatenate([np.asarray(z) for _x, z in centered_t])
+        z_max_t = float(all_zt.max())
+        # Mirror: z' = -z. Reverse order to keep CCW orientation.
+        mirrored = [(np.asarray(x)[::-1], -np.asarray(z)[::-1]) for x, z in centered_t]
+        floor_after_mirror = -z_max_t
+        dz = (bot_z_apex + initial_gap_um) - floor_after_mirror
+        positioned_t = [(x, z + dz) for x, z in mirrored]
+        top_z_hi = float(max(z.max() for _x, z in positioned_t))
+        top_polys_init = [_plate_polygon(pitch_um, top_z_hi, top_z_hi + plate_um)]
+        top_polys_init.extend(positioned_t)
 
     sign = -1.0 if dir_value == "down" else +1.0
-    def _shift_polys(polys, dz):
-        return [(x, z + dz) for x, z in polys]
-    top_polys_final = _shift_polys(top_polys_init, sign * disp_um)
+    top_polys_final = [(x, z + sign * disp_um) for x, z in top_polys_init]
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 8), dpi=110)
     all_x = np.concatenate([x for x, _z in bottom_polys + top_polys_init + top_polys_final])

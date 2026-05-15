@@ -364,27 +364,30 @@ def extract_profile(
         gmsh.finalize()
 
 
-def write_csv(path: Path, x: np.ndarray, z: np.ndarray) -> None:
+def write_csv(path: Path, x: np.ndarray, z: np.ndarray, out_units: str = "um") -> None:
+    """Write the polyline as CSV. `out_units` controls both the value
+    scale and the header (`x_um,z_um`, `x_mm,z_mm`, etc.).
+    """
+    factor = 1.0 / _UNIT_TO_UM[out_units]  # µm → out unit
+    suffix = out_units
     with path.open("w", encoding="utf-8") as f:
-        f.write("x_um,z_um\n")
+        f.write(f"x_{suffix},z_{suffix}\n")
         for xi, zi in zip(x, z):
-            f.write(f"{xi:.6f},{zi:.6f}\n")
+            f.write(f"{xi * factor:.6f},{zi * factor:.6f}\n")
 
 
 def write_svg(path: Path,
               polylines: list[tuple[np.ndarray, np.ndarray]],
-              closed: bool = False) -> None:
-    """Emit an SVG with one `<path>` per polyline.
-
-    Coordinates are in µm; y is flipped so positive z runs upward in
-    the rendered SVG (matches CAD convention).
-    `vector-effect="non-scaling-stroke"` keeps the line visible
-    regardless of zoom — otherwise a 1-unit stroke against a
-    ~40,000-unit viewBox is invisible. `closed=True` closes each
-    path with `Z` and fills it light blue (use for full outlines).
-    """
-    all_x = np.concatenate([x for x, _z in polylines])
-    all_z = np.concatenate([z for _x, z in polylines])
+              closed: bool = False,
+              out_units: str = "um") -> None:
+    """Emit an SVG with one `<path>` per polyline. Coordinates are scaled
+    to `out_units` so the SVG file is in the same unit the user will pick
+    in the GUI (avoiding a double-scale when both the file and the GUI
+    dropdown convert to µm)."""
+    factor = 1.0 / _UNIT_TO_UM[out_units]  # µm → out unit
+    scaled = [(np.asarray(x) * factor, np.asarray(z) * factor) for x, z in polylines]
+    all_x = np.concatenate([x for x, _z in scaled])
+    all_z = np.concatenate([z for _x, z in scaled])
     x_lo, x_hi = float(all_x.min()), float(all_x.max())
     z_lo, z_hi = float(all_z.min()), float(all_z.max())
     w = max(x_hi - x_lo, 1.0)
@@ -401,7 +404,7 @@ def write_svg(path: Path,
 
     fill = "#cce6ff" if closed else "none"
     paths = []
-    for x, z in polylines:
+    for x, z in scaled:
         parts = [f"M {x[0]:.3f} {-z[0]:.3f}"]
         parts.extend(f"L {xi:.3f} {-zi:.3f}" for xi, zi in zip(x[1:], z[1:]))
         if closed:
@@ -446,7 +449,13 @@ def main() -> None:
                          "the full cross-section. Only works for genuinely "
                          "axisymmetric bodies — the default (full outline) is "
                          "the general case.")
+    ap.add_argument("--out-units", choices=list(_UNIT_TO_UM), default=None,
+                    help="Unit to write the CSV/SVG values in (default: same "
+                         "as --units, so the file is in the natural unit of "
+                         "the input STEP).")
     args = ap.parse_args()
+    if args.out_units is None:
+        args.out_units = args.units
 
     if not args.step.is_file():
         ap.error(f"STEP file not found: {args.step}")
@@ -476,13 +485,13 @@ def main() -> None:
         print(f"  polyline: {len(x_csv)} pts, x [{x_csv.min():.1f}, {x_csv.max():.1f}] µm, "
               f"z [{z_csv.min():.1f}, {z_csv.max():.1f}] µm")
 
-    write_csv(csv_path, x_csv, z_csv)
+    write_csv(csv_path, x_csv, z_csv, out_units=args.out_units)
     print(f"  wrote {csv_path}")
     if args.svg:
         if args.right_half:
-            write_svg(args.svg, [(x_csv, z_csv)], closed=False)
+            write_svg(args.svg, [(x_csv, z_csv)], closed=False, out_units=args.out_units)
         else:
-            write_svg(args.svg, polylines, closed=True)
+            write_svg(args.svg, polylines, closed=True, out_units=args.out_units)
         print(f"  wrote {args.svg}")
 
 
