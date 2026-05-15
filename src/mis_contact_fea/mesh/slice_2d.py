@@ -112,6 +112,26 @@ def build_mesh(args) -> dict:
         bottom_z_apex=z_apex_bot if asymmetric else None,
     )
 
+    # Auto-scale guard: warn if mesh_size is much larger than the
+    # smallest polyline segment, since gmsh struggles to place a big
+    # mesh_size triangle adjacent to a tiny boundary edge. Only clamp
+    # when the ratio is severe (>4x), to avoid over-meshing cases
+    # where gmsh can stretch boundary edges into larger triangles.
+    def _min_seg_len(vx, vz):
+        vx = np.asarray(vx, dtype=float)
+        vz = np.asarray(vz, dtype=float)
+        d = np.hypot(np.diff(vx), np.diff(vz))
+        d = d[d > 1e-12]
+        return float(d.min()) if len(d) else float("inf")
+
+    min_seg = min(_min_seg_len(bvx, bvz), _min_seg_len(tvx, tvz))
+    requested_mesh = float(args.mesh_size_um)
+    if requested_mesh > 4.0 * min_seg:
+        safe_mesh = max(min_seg * 2.0, 1e-3)
+        print(f"  [auto-scale] mesh_size_um={requested_mesh:.2f} much larger than "
+              f"min boundary segment {min_seg:.2f}; clamping to {safe_mesh:.2f}")
+        args.mesh_size_um = safe_mesh
+
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", args.gmsh_terminal)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay, robust for 2D

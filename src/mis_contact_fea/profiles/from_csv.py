@@ -45,6 +45,40 @@ import numpy as np
 _HEADER_TOKENS = {"x", "z", "r", "y", "x_um", "z_um", "r_um"}
 
 
+def _compact_flat_runs(x: np.ndarray, z: np.ndarray, tol: float = 1e-9
+                       ) -> tuple[np.ndarray, np.ndarray]:
+    """Collapse contiguous runs of vertices at z_min or z_max to just
+    the first and last of each run. STEP-derived right-half profiles
+    have many vertices along the flat base/apex edges; the layout
+    helpers (bottom_body_vertices / top_body_vertices) assume only a
+    'pillar shoulder' single transition and fold the polygon onto
+    itself otherwise.
+
+    Tolerance is intentionally tight: we only collapse runs where
+    consecutive vertices are at *exactly* the same z (the flat-edge
+    case from STEP slicing). Curved approaches near the apex of an
+    analytic shape stay intact."""
+    if len(x) < 4:
+        return x, z
+    z_floor = float(z.min())
+    z_apex = float(z.max())
+    n = len(x)
+    keep = np.ones(n, dtype=bool)
+    for marker in (z_floor, z_apex):
+        flat = np.abs(z - marker) <= tol
+        i = 0
+        while i < n:
+            if not flat[i]:
+                i += 1; continue
+            j = i
+            while j + 1 < n and flat[j + 1]:
+                j += 1
+            if j > i + 1:
+                keep[i + 1:j] = False
+            i = j + 1
+    return x[keep], z[keep]
+
+
 def _looks_like_header(row: list[str]) -> bool:
     """Return True if the first cell isn't a number — heuristic header detection."""
     try:
@@ -119,6 +153,13 @@ def load_csv_profile(
         raise ValueError(f"{path}: non-finite values in polyline")
     if (x < -1e-9).any():
         raise ValueError(f"{path}: x must be >= 0 (right-half profile only)")
+
+    # Compact long runs of vertices at z_min / z_max into just the two
+    # endpoints of each run. Profiles extracted from a STEP cross-section
+    # have many vertices along the flat bottom/top edge; bottom/top
+    # body_vertices() only expect a single endpoint there and would
+    # otherwise fold the polygon onto itself.
+    x, z = _compact_flat_runs(x, z)
 
     if prepend_pillar:
         # User supplied just the lobe; stitch the standard pillar to the

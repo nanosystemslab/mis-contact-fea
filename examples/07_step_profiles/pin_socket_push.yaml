@@ -1,0 +1,35 @@
+geometry:
+  pitch_um: 14000.0
+  Hp_um: 0.001
+  plate_um: 1000.0
+  initial_gap_um: -100.0
+profile:
+  kind: csv
+  path: examples/07_step_profiles/pin_slice_rh.csv
+  units: um
+  prepend_pillar: false
+top_profile:
+  kind: csv
+  path: examples/07_step_profiles/socket_slice_rh.csv
+  units: um
+  prepend_pillar: false
+mesh:
+  characteristic_size_um: 200.0
+solver:
+  steps: 700                 # smaller increments (50 µm/step) so the
+                             # contact set evolves smoothly through barb
+                             # engagement instead of jumping discretely
+  disp_um: 35000.0
+  direction: down
+  contact_mode: raytracing
+  fric: 0.0
+  newton_rtol: 0.2
+  newton_atol: 500000.0      # loose enough to accept the natural residual
+                             # floor at barb-engagement events (~120k)
+  gamma_scale: 0.05          # softer Nitsche penalty: better convergence
+                             # for sharp barb features at the cost of
+                             # slightly larger interpenetration
+  ksp_type: preonly
+  pc_type: lu
+output:
+  out_dir: runs_step_profiles/pin_socket_push
